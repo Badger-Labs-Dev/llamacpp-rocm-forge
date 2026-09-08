@@ -1,0 +1,167 @@
+# Ubuntu port of Dockerfile.rocm-7.2.4-rdma-fix.
+#
+# Notes for readers coming from the Fedora version of this file:
+#   - dnf/microdnf (Fedora's package managers) become apt-get (Ubuntu/Debian).
+#     There is no separate "minimal" package manager on Ubuntu the way
+#     microdnf is a lighter sibling of dnf on Fedora - it's apt-get in both
+#     build and runtime stages, we just keep the runtime install list short.
+#   - Fedora "-devel" packages (headers/libs for building against something)
+#     map to Ubuntu "-dev" packages, e.g. hip-devel -> hip-dev,
+#     rocblas-devel -> rocblas-dev, libcurl-devel -> libcurl4-openssl-dev.
+#   - ROCm ships an official apt repo (like the yum repo used on Fedora), but
+#     registering it needs a GPG keyring + a source list entry + an apt pin
+#     (Ubuntu's normal "unattended repo trust" dance) instead of a single
+#     dnf .repo file.
+#   - There's no Fedora-minimal-style stripped base image for Ubuntu; we just
+#     reuse ubuntu:24.04 (Noble) for both stages and rely on
+#     --no-install-recommends + apt cleanup to keep the runtime layer lean.
+#   - Ubuntu 26.04 (Resolute Raccoon) was evaluated and rejected: AMD's
+#     repo.radeon.com apt repo only ships packages built for jammy (22.04)
+#     and noble (24.04) - there's no resolute suite yet. Running noble-built
+#     ROCm .debs on a 26.04 base surfaced real ABI breakage (AMD's prebuilt
+#     lld needs noble's libxml2.so.2; 26.04 ships a newer libxml2 with no
+#     compat symlink) and 26.04's own universe repo now carries a competing,
+#     older ROCm 7.1.1 that apt has to be pinned away from. Revisit once AMD
+#     publishes resolute-targeted ROCm packages.
+#
+# GPU target: built for gfx1201 (AMD Radeon AI PRO R9700), not gfx1151
+# (Strix Halo APU) which the upstream fedora file targets.
+
+ARG UBUNTU_CODENAME=noble
+ARG ROCM_VERSION=7.2.4
+
+# build stage
+FROM ubuntu:24.04 AS builder
+ARG UBUNTU_CODENAME
+ARG ROCM_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# tools needed just to register the ROCm apt repo (curl/gnupg equivalent of
+# Fedora trusting a .repo file's gpgkey= line automatically)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates gnupg wget \
+  && rm -rf /var/lib/apt/lists/*
+
+# rocm 7.2.4 repo
+RUN mkdir --parents --mode=0755 /etc/apt/keyrings \
+  && wget https://repo.radeon.com/rocm/rocm.gpg.key -O - \
+     | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null \
+  && tee /etc/apt/sources.list.d/rocm.list <<REPO
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} ${UBUNTU_CODENAME} main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/${ROCM_VERSION}/ubuntu ${UBUNTU_CODENAME} main
+REPO
+RUN tee /etc/apt/preferences.d/rocm-pin-600 <<'PIN'
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+PIN
+
+# deps
+# (--no-install-recommends is the apt analogue of dnf's
+#  --setopt=install_weak_deps=False; there's no exact match for
+#  --exclude='*sdk*'/'*samples*'/'*-doc*' filtering, so we just list the
+#  packages we actually want, same as the Fedora file's explicit list does)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  build-essential cmake lld clang libcurl4-openssl-dev ninja-build \
+  librdmacm-dev libibverbs-dev \
+  rocm-llvm rocm-device-libs hip-runtime-amd hip-dev \
+  rocblas rocblas-dev hipblas hipblas-dev rocm-cmake libomp-dev \
+  rocminfo radeontop \
+  git vim sudo rsync patch \
+  && rm -rf /var/lib/apt/lists/*
+
+# rocm env
+ENV ROCM_PATH=/opt/rocm \
+  HIP_PATH=/opt/rocm \
+  HIP_CLANG_PATH=/opt/rocm/llvm/bin \
+  HIP_DEVICE_LIB_PATH=/opt/rocm/amdgcn/bitcode \
+  PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:$PATH
+
+# llama.cpp RDMA inline fallback branch
+WORKDIR /opt/llama.cpp
+ARG REPO=https://github.com/kyuz0/llama.cpp.git
+ARG BRANCH=fix/rpc-rdma-inline-fallback
+RUN git clone -b ${BRANCH} --single-branch --recursive ${REPO} .
+
+COPY llama-grammar.patch /tmp/llama-grammar.patch
+
+# build
+RUN git clean -xdf \
+  && git submodule update --recursive \
+  && patch -p1 < /tmp/llama-grammar.patch \
+  && cmake -S . -B build \
+  -DGGML_HIP=ON \
+  -DAMDGPU_TARGETS=gfx1201 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_RPC=ON \
+  -DROCM_PATH=/opt/rocm \
+  -DHIP_PATH=/opt/rocm \
+  -DHIP_PLATFORM=amd \
+  && cmake --build build --config Release -- -j$(nproc) \
+  && cmake --install build --config Release
+
+# libs
+RUN mkdir -p /usr/local/lib64 \
+  && find /opt/llama.cpp/build -type f -name 'lib*.so*' -exec cp {} /usr/local/lib64/ \; \
+  && ldconfig
+
+# helper
+COPY gguf-vram-estimator.py /usr/local/bin/gguf-vram-estimator.py
+RUN chmod +x /usr/local/bin/gguf-vram-estimator.py
+
+# runtime stage
+FROM ubuntu:24.04
+ARG UBUNTU_CODENAME
+ARG ROCM_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates gnupg wget \
+  && rm -rf /var/lib/apt/lists/*
+
+# rocm 7.2.4 repo
+RUN mkdir --parents --mode=0755 /etc/apt/keyrings \
+  && wget https://repo.radeon.com/rocm/rocm.gpg.key -O - \
+     | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null \
+  && tee /etc/apt/sources.list.d/rocm.list <<REPO
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} ${UBUNTU_CODENAME} main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/graphics/${ROCM_VERSION}/ubuntu ${UBUNTU_CODENAME} main
+REPO
+RUN tee /etc/apt/preferences.d/rocm-pin-600 <<'PIN'
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+PIN
+
+# runtime deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash ca-certificates libatomic1 libstdc++6 libgcc-s1 libgomp1 libibverbs1 sudo \
+  hip-runtime-amd rocblas hipblas \
+  rocminfo radeontop procps \
+  && rm -rf /var/lib/apt/lists/*
+
+# copy
+COPY --from=builder /usr/local/ /usr/local/
+COPY --from=builder /opt/llama.cpp/build/bin/ggml-rpc-* /usr/local/bin/
+
+# ld
+RUN echo "/usr/local/lib"  > /etc/ld.so.conf.d/local.conf \
+  && echo "/usr/local/lib64" >> /etc/ld.so.conf.d/local.conf \
+  && ldconfig \
+  && cp -n /usr/local/lib/libllama*.so* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true \
+  && cp -n /usr/local/lib64/libllama*.so* /usr/lib/x86_64-linux-gnu/ 2>/dev/null || true \
+  && ldconfig
+
+# helper
+COPY gguf-vram-estimator.py /usr/local/bin/gguf-vram-estimator.py
+RUN chmod +x /usr/local/bin/gguf-vram-estimator.py
+
+# profile
+RUN printf '%s\n' \
+  > /etc/profile.d/rocm.sh && chmod +x /etc/profile.d/rocm.sh \
+  && echo 'source /etc/profile.d/rocm.sh' >> /etc/bash.bashrc
+
+# shell
+CMD ["/bin/bash"]
