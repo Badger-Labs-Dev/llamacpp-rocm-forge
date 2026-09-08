@@ -51,6 +51,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -575,6 +576,7 @@ def main() -> None:
         rows = write_curve_summary(results, summary_path)
         failed = [r for r in results if r.status == "failed"]
         mode = "full-sweep" if args.full_sweep else ("calibrate-legacy" if args.calibrate else "fixed")
+        completed_at = datetime.now(timezone.utc).isoformat()
 
         manifest = {
             "image": args.image,
@@ -587,6 +589,7 @@ def main() -> None:
             "prefill_tokens": PREFILL_TOKENS,
             "generation_tokens": GENERATION_TOKENS,
             "mode": mode,
+            "completed_at": completed_at,
             "summary_rows": rows,
             "runs": [
                 {"series": r.series, "config": asdict(r.config), "status": r.status, "return_code": r.return_code}
@@ -610,6 +613,7 @@ def main() -> None:
             "model_name": gguf_metadata.get("general.name"),
             "model_context_length": max_ctx,
             "run_id": run_id,
+            "run_completed_at": completed_at,
             "mode": mode,
             "environment": env,
             "final_config": asdict(config),

@@ -65,9 +65,11 @@ root (default `./results`); each `--model` gets its own
 `metadata.json` is the compact, purpose-built file for a future site
 generator to read across many run directories without parsing every CSV:
 model name/architecture/context-length, the full environment (ROCm version,
-llama.cpp build, GPU name/VRAM, host kernel), the final chosen config, and a
-summary throughput number. `campaign_manifest.json` keeps the full detail
-(every stage's tuning scores, every run's status) for deeper inspection.
+llama.cpp build, GPU name/VRAM, host kernel), when the run completed
+(`run_completed_at`, UTC ISO 8601), the final chosen config, and a summary
+throughput number. `campaign_manifest.json` keeps the full detail (every
+stage's tuning scores, every run's status, the same completion timestamp as
+`completed_at`) for deeper inspection.
 
 ## Building the image
 
