@@ -1,0 +1,160 @@
+:root {
+  --bg: #0f1117;
+  --card-bg: #171a23;
+  --border: #2a2e3a;
+  --text: #e6e8ee;
+  --text-muted: #9aa0ae;
+  --accent: #2563eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+}
+
+.page-header h1 {
+  margin: 0 0 4px;
+  font-size: 1.8rem;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin: 0 0 24px;
+}
+
+.model-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.model-button {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.model-button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  margin: 0 0 4px;
+  font-size: 1.2rem;
+}
+
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.section-heading select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+
+.section-note {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0 0 12px;
+}
+
+.empty-note {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 16px 0;
+}
+
+.caveat-note {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.error-note {
+  color: #ff8a8a;
+}
+
+.recommendation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recommendation-row {
+  display: grid;
+  grid-template-columns: 140px 100px 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.recommendation-row:last-child {
+  border-bottom: none;
+}
+
+.recommendation-label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.recommendation-value {
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+}
+
+.recommendation-note {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.page-footer {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+  margin-top: 32px;
+}
+
+code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.85em;
+}

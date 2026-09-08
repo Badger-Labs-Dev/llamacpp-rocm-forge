@@ -34,13 +34,18 @@ applies to our hardware and workflow.
 
 - `docker/` - the Dockerfile (Ubuntu 24.04 base, ROCm 7.2.4, gfx1201 target)
   plus its direct build dependencies (grammar patch, VRAM estimator script).
-- `benchmark/` - upstream's benchmark orchestration scripts, kept for
-  reference/adaptation. `UPSTREAM_RUNBOOK_REFERENCE.md` is their agent runbook;
-  it assumes their SSH hosts, `llama-cockpit` CLI, and Toolbx - none of which
-  we have. Treat it as a spec for the benchmark *protocol* (depths, batch
-  sizes, repetitions, etc.), not a runnable procedure here.
+- `benchmark/` - the benchmark driver (`run_bench.py`) and its helpers
+  (`hf_models.py`, `gguf_info.py`, `environment_info.py`,
+  `recommend_settings.py`, `generate_viewer_data.py`), plus upstream's
+  original orchestration scripts kept for reference/adaptation.
+  `UPSTREAM_RUNBOOK_REFERENCE.md` is their agent runbook; it assumes their
+  SSH hosts, `llama-cockpit` CLI, and Toolbx - none of which we have. Treat
+  it as a spec for the benchmark *protocol* (depths, batch sizes,
+  repetitions, etc.), not a runnable procedure here.
 - `docs/` - reference docs (VRAM estimation, local build notes) carried over
   as-is.
+- `viewer/` - static React + TypeScript + Vite app that visualizes
+  `results/` (see "Visualizing results" below).
 
 ## Status
 
@@ -196,6 +201,9 @@ existing run directory (same model + same ROCm/llama.cpp versions).
 `validate_campaign.py`, `generate_results_json.py`, and
 `merge_curve_summary.py` are upstream's originals, kept for reference; they
 depend on their Toolbx/Cockpit/SSH-host stack and don't run here as-is.
+Don't confuse `generate_results_json.py` (upstream's original, unmodified)
+with `generate_viewer_data.py` (ours, described below) - similar names,
+different purpose and format.
 
 ## What gets swept, and why not everything
 
@@ -302,6 +310,59 @@ disagree with what's actually best across the full context range:
 When these disagree, the script recommends the mean-curve winner and says so
 explicitly, rather than silently trusting the depth-0-only calibration pass.
 Add `--json` for machine-readable output.
+
+## Visualizing results
+
+`viewer/` is a static React + TypeScript + Vite app (charts via
+[Recharts](https://recharts.org)) that reads `viewer/public/results.json`
+- generated from `results/` by `benchmark/generate_viewer_data.py` - and
+renders three views per model:
+
+1. **Performance across versions** - depth-0 throughput plotted against
+   every ROCm/llama.cpp version (`run_id`) the model has been benchmarked
+   with, in completion order. This is the primary goal: seeing whether a
+   ROCm or llama.cpp upgrade actually helped.
+2. **Parameter sensitivity** - a tornado chart, for a selected run: one bar
+   per swept parameter (flash-attn, KV cache dtype, ubatch×batch), sized by
+   the throughput swing between that parameter's best and worst tested
+   candidate. Answers "how much does performance actually depend on this
+   setting" at a glance, sorted biggest-impact-first.
+3. **Recommended settings** - the winning config for that run, each field
+   annotated with its sensitivity ("matters a lot" / "worth checking" /
+   "pick whatever's convenient") pulled from the same tornado data, so the
+   recommendation says which choices are safe to ignore, not just which one
+   won.
+
+The sensitivity data comes from `--full-sweep`'s `tuning_log` (see "What
+gets swept" above) - fixed-config and `--calibrate` runs only contribute a
+version-over-time data point, no tornado chart, since they don't probe
+alternatives. The tornado chart is explicitly labeled as "sensitivity along
+the coordinate-descent search path, not a full independent grid" - each
+stage's candidates were tested holding the *previous* stage's winner fixed,
+so this isn't a guaranteed independent effect, just what showed up along
+the path the auto-tuner actually searched.
+
+Regenerate the data after new benchmark runs, then run the viewer locally:
+
+```bash
+uv run benchmark/generate_viewer_data.py   # writes viewer/public/results.json
+cd viewer
+npm install    # first time only
+npm run dev
+```
+
+Build for GitHub Pages (project-site hosting at
+`https://<user>.github.io/r9700-llm-bench/`, set via `base` in
+`viewer/vite.config.ts`):
+
+```bash
+cd viewer && npm run build   # outputs viewer/dist/
+```
+
+`results.json` isn't committed (see `viewer/.gitignore`) - regenerate it as
+part of whatever deploys the site (a GitHub Actions workflow running
+`generate_viewer_data.py` then `npm run build`, or by hand before a manual
+deploy). See `viewer/README.md` for more detail.
 
 ## Recovering from an interrupted run
 
