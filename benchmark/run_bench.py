@@ -45,12 +45,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import json
 import re
+import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -111,6 +114,38 @@ class RunResult:
     jsonl_path: Path
     stderr_path: Path
     command: list[str]
+
+
+# Names of docker containers currently running a benchmark, so they can be
+# force-killed if this script is interrupted (Ctrl-C, SIGTERM, an unhandled
+# exception). Without this, `docker run` surviving the parent script's death
+# leaves the container - and the GPU memory it holds - running indefinitely;
+# this has actually happened during development and is exactly the kind of
+# thing that silently wastes VRAM until someone notices and runs `docker
+# kill` by hand. `docker run --rm` alone does not protect against this: it
+# only removes the container after IT exits, which doesn't happen just
+# because the client/parent process died.
+_ACTIVE_CONTAINERS: set[str] = set()
+
+
+def _kill_active_containers() -> None:
+    for name in list(_ACTIVE_CONTAINERS):
+        subprocess.run(["docker", "kill", name], capture_output=True)
+        _ACTIVE_CONTAINERS.discard(name)
+
+
+def _install_cleanup_handlers() -> None:
+    atexit.register(_kill_active_containers)
+
+    def _handle_signal(signum, frame):
+        _kill_active_containers()
+        # Restore default handling and re-raise, so the process actually
+        # exits with the conventional 128+signum code instead of hanging.
+        signal.signal(signum, signal.SIG_DFL)
+        signal.raise_signal(signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _handle_signal)
 
 
 def model_key(model_path: str) -> str:
@@ -223,6 +258,7 @@ def run_one(
     out_name = f"{model_key(str(host_model_path))}__{series}__{config.tag()}"
     jsonl_path = out_dir / f"{out_name}.jsonl"
     stderr_path = out_dir / f"{out_name}.stderr.log"
+    container_name = f"r9700-llm-bench-{uuid.uuid4().hex[:12]}"
 
     bench_cmd = build_llama_bench_command(
         model_container_path=container_model_path,
@@ -234,6 +270,7 @@ def run_one(
 
     docker_cmd = [
         "docker", "run", "--rm",
+        "--name", container_name,
         *docker_gpu_args(gpu_gids),
         "-v", f"{real_model_path.parent}:/models:ro",
         image,
@@ -242,9 +279,18 @@ def run_one(
 
     print(f"    $ {' '.join(docker_cmd)}", flush=True)
 
-    with jsonl_path.open("w", encoding="utf-8") as out_f, \
-         stderr_path.open("w", encoding="utf-8") as err_f:
-        proc = subprocess.run(docker_cmd, stdout=out_f, stderr=err_f)
+    # Track the container name so a signal handler or atexit hook can
+    # `docker kill` it if this script gets interrupted mid-run (see
+    # _ACTIVE_CONTAINERS above) - a plain subprocess.run() here would leave
+    # an orphaned container (and its GPU memory) running if the parent
+    # process dies before the child does.
+    _ACTIVE_CONTAINERS.add(container_name)
+    try:
+        with jsonl_path.open("w", encoding="utf-8") as out_f, \
+             stderr_path.open("w", encoding="utf-8") as err_f:
+            proc = subprocess.run(docker_cmd, stdout=out_f, stderr=err_f)
+    finally:
+        _ACTIVE_CONTAINERS.discard(container_name)
 
     status = "ok" if proc.returncode == 0 and jsonl_path.stat().st_size > 0 else "failed"
     return RunResult(
@@ -492,6 +538,7 @@ def default_gpu_gids() -> list[str]:
 
 
 def main() -> None:
+    _install_cleanup_handlers()
     args = parse_args()
     gpu_gids = args.gpu_gid or default_gpu_gids()
     if not gpu_gids:

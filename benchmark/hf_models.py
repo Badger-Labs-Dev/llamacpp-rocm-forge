@@ -38,10 +38,18 @@ import sys
 
 try:
     from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub.utils import disable_progress_bars
     try:
         from huggingface_hub.errors import HfHubHTTPError
     except ImportError:  # older huggingface_hub versions
         from huggingface_hub.utils import HfHubHTTPError
+    # hf_hub_download's tqdm progress bar assumes a real interactive
+    # terminal; when stdout isn't one (piped, redirected, run under a
+    # supervising process/log capture) its carriage-return redraws can
+    # render as a flood of near-blank lines instead of updating in place.
+    # Downloads are a one-time, background part of this tool - not worth
+    # that risk - so bars are disabled unconditionally.
+    disable_progress_bars()
 except ImportError:
     HfApi = None
     hf_hub_download = None

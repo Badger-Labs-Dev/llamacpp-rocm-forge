@@ -250,6 +250,19 @@ warning. Each run's `campaign_manifest.json` records `context_length` and
 `depths` (per-model now, since each model gets its own manifest — see
 "Results layout" above).
 
+**Large-context models can legitimately OOM at their deepest tested
+depth.** A model with a 262144 trained context length will have that
+depth included in its sweep — a KV cache that large for a 30B+ model can
+exceed the R9700's 32GB VRAM outright. `llama-bench` reports this as
+`failed to load model` / `cudaMalloc failed: out of memory` in the
+relevant `.stderr.log`, and `run_bench.py` records that probe/run as
+`failed` rather than crashing the whole sweep. If every probe in a run
+fails (not just the deepest one), that's a different problem - check for a
+stray container still holding VRAM from an earlier interrupted run (see
+"Recovering from an interrupted run" below) before assuming it's a
+context-size issue. Use `--max-depth N` to cap the sweep below a model's
+full context if you don't need numbers at its absolute limit.
+
 ## Reading results: which ubatch to use
 
 `benchmark/recommend_settings.py` reads a `curve_summary.csv` (or a results
@@ -270,3 +283,20 @@ disagree with what's actually best across the full context range:
 When these disagree, the script recommends the mean-curve winner and says so
 explicitly, rather than silently trusting the depth-0-only calibration pass.
 Add `--json` for machine-readable output.
+
+## Recovering from an interrupted run
+
+Each `docker run` this script launches gets a unique
+`--name r9700-llm-bench-<random>` container name, and Ctrl-C/SIGTERM/an
+unhandled exception in `run_bench.py` kills any containers it started
+before exiting (`_install_cleanup_handlers()` in `run_bench.py`). A `kill
+-9` on the Python process bypasses that (SIGKILL can't be caught), so if a
+run ever gets forcefully killed and you notice VRAM staying pinned
+afterward, clean up by hand:
+
+```bash
+docker ps --filter name=r9700-llm-bench- --format '{{.Names}}'
+docker kill $(docker ps --filter name=r9700-llm-bench- -q)
+rocm-smi --showmeminfo vram   # confirm VRAM freed
+```
+
