@@ -75,3 +75,25 @@ so real comparisons don't accidentally use a truncated sweep).
 `merge_curve_summary.py` are upstream's originals, kept for reference; they
 depend on their Toolbx/Cockpit/SSH-host stack and don't run here as-is.
 
+## Reading results: which ubatch to use
+
+`benchmark/recommend_settings.py` reads a `curve_summary.csv` (or a results
+directory containing one) and recommends a ubatch per model:
+
+```bash
+python3 benchmark/recommend_settings.py results/20260908T144845Z
+```
+
+It checks three things, since a naive "best depth-0 throughput" pick (what
+`--calibrate` uses internally, matching upstream's convention) can
+disagree with what's actually best across the full context range:
+
+- **depth-0 winner** - fastest at a cold/short prompt (what `--calibrate` picks)
+- **mean-curve winner** - fastest averaged across all tested depths
+- **worst-case winner** - fastest at the deepest tested context
+
+When these disagree, the script recommends the mean-curve winner and says so
+explicitly, rather than silently trusting the depth-0-only calibration pass.
+Add `--json` for machine-readable output.
+
+
