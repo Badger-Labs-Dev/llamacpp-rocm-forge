@@ -1,0 +1,101 @@
+{
+  "completed_at": "2026-09-08T18:27:22.413085+00:00",
+  "context_length": 32768,
+  "depths": [
+    0,
+    2048,
+    6144
+  ],
+  "device": "ROCm0",
+  "final_config": {
+    "batch": 2048,
+    "ctk": "f16",
+    "ctv": "f16",
+    "flash_attn": 1,
+    "ubatch": 2048
+  },
+  "generation_tokens": 128,
+  "image": "r9700-llm-bench:rocm-7.2.4",
+  "mode": "full-sweep",
+  "prefill_tokens": 2048,
+  "repetitions": 3,
+  "runs": [
+    {
+      "config": {
+        "batch": 2048,
+        "ctk": "f16",
+        "ctv": "f16",
+        "flash_attn": 1,
+        "ubatch": 2048
+      },
+      "depths_run": [
+        0,
+        2048,
+        6144
+      ],
+      "depths_skipped": [],
+      "return_code": 0,
+      "series": "prefill",
+      "status": "ok",
+      "stop_reason": null
+    },
+    {
+      "config": {
+        "batch": 2048,
+        "ctk": "f16",
+        "ctv": "f16",
+        "flash_attn": 1,
+        "ubatch": 2048
+      },
+      "depths_run": [
+        0,
+        2048,
+        6144
+      ],
+      "depths_skipped": [],
+      "return_code": 0,
+      "series": "generation",
+      "status": "ok",
+      "stop_reason": null
+    }
+  ],
+  "summary_rows": 6,
+  "tuning_log": [
+    {
+      "scores": {
+        "0": 6309.957684499999,
+        "1": 22822.0583835
+      },
+      "stage": "flash_attn",
+      "winner": 1
+    },
+    {
+      "scores": {
+        "f16": 22368.280197,
+        "q4_0": 21859.853853499997,
+        "q8_0": 21860.710129
+      },
+      "stage": "kv_cache_dtype",
+      "winner": "f16"
+    },
+    {
+      "scores": {
+        "ub1024_b1024": 25292.536071,
+        "ub1024_b2048": 25591.709147,
+        "ub1024_b4096": 25073.089381,
+        "ub2048_b2048": 29069.197239,
+        "ub2048_b4096": 25355.617185,
+        "ub256_b1024": 18230.278938,
+        "ub256_b2048": 15887.128775,
+        "ub256_b4096": 15928.589456,
+        "ub256_b512": 18087.430546,
+        "ub512_b1024": 22511.735874,
+        "ub512_b2048": 26406.406405,
+        "ub512_b4096": 22232.227709,
+        "ub512_b512": 26579.614764
+      },
+      "stage": "ubatch_batch_grid",
+      "winner": "ub2048_b2048"
+    }
+  ]
+}

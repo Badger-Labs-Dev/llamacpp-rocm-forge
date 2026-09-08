@@ -359,10 +359,15 @@ Build for GitHub Pages (project-site hosting at
 cd viewer && npm run build   # outputs viewer/dist/
 ```
 
-`results.json` isn't committed (see `viewer/.gitignore`) - regenerate it as
-part of whatever deploys the site (a GitHub Actions workflow running
-`generate_viewer_data.py` then `npm run build`, or by hand before a manual
-deploy). See `viewer/README.md` for more detail.
+`results.json` (the aggregated file) isn't committed (see
+`viewer/.gitignore`) - it's generated output, regenerate it any time. The
+raw `results/` directory it's built from **is** committed (as of this
+writing there's no other way to get real benchmark data - which only this
+GPU's host machine can produce - into a CI runner that has no GPU at all).
+The GitHub Actions workflow below builds off whatever's committed to
+`results/` on `main`; running a new benchmark locally means also
+committing its new `results/<slug>/<run-id>/` directory and pushing, or
+the live site won't reflect it.
 
 ## Recovering from an interrupted run
 
