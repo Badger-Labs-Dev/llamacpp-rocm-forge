@@ -1,0 +1,147 @@
+
+===== depth=0 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 0, "test_time": "2026-09-08T19:20:51Z", "avg_ns": 1719117656, "stddev_ns": 11539980, "avg_ts": 74.459028, "stddev_ts": 0.497894, "samples_ns": [ 1732440682, 1712250789, 1712661498 ],"samples_ts": [ 73.8842, 74.7554, 74.7375 ]}
+
+===== depth=2048 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 2048, "test_time": "2026-09-08T19:21:00Z", "avg_ns": 1718323983, "stddev_ns": 2506008, "avg_ts": 74.491296, "stddev_ts": 0.108518, "samples_ns": [ 1721215516, 1716955185, 1716801250 ],"samples_ts": [ 74.3661, 74.5506, 74.5573 ]}
+
+===== depth=6144 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 6144, "test_time": "2026-09-08T19:21:10Z", "avg_ns": 1753387282, "stddev_ns": 3936693, "avg_ts": 73.001801, "stddev_ts": 0.163694, "samples_ns": [ 1757902493, 1751582948, 1750676406 ],"samples_ts": [ 72.814, 73.0768, 73.1146 ]}
+
+===== depth=14336 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 14336, "test_time": "2026-09-08T19:21:21Z", "avg_ns": 1810137045, "stddev_ns": 3559342, "avg_ts": 70.713060, "stddev_ts": 0.138880, "samples_ns": [ 1814243003, 1808235527, 1807932606 ],"samples_ts": [ 70.5528, 70.7872, 70.7991 ]}
+
+===== depth=22528 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 22528, "test_time": "2026-09-08T19:21:37Z", "avg_ns": 1854930337, "stddev_ns": 3216131, "avg_ts": 69.005425, "stddev_ts": 0.119533, "samples_ns": [ 1858533503, 1852352424, 1853905086 ],"samples_ts": [ 68.8715, 69.1013, 69.0434 ]}
+
+===== depth=30720 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 30720, "test_time": "2026-09-08T19:21:57Z", "avg_ns": 1912718570, "stddev_ns": 5335828, "avg_ts": 66.920803, "stddev_ts": 0.186385, "samples_ns": [ 1918866353, 1909294351, 1909995007 ],"samples_ts": [ 66.7061, 67.0405, 67.0159 ]}
+
+===== depth=47104 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 47104, "test_time": "2026-09-08T19:22:23Z", "avg_ns": 2018637734, "stddev_ns": 3203230, "avg_ts": 63.409205, "stddev_ts": 0.100530, "samples_ns": [ 2022325906, 2017035978, 2016551318 ],"samples_ts": [ 63.2935, 63.4595, 63.4747 ]}
+
+===== depth=63488 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 63488, "test_time": "2026-09-08T19:23:04Z", "avg_ns": 2127128779, "stddev_ns": 5512794, "avg_ts": 60.175281, "stddev_ts": 0.155713, "samples_ns": [ 2133484639, 2123652617, 2124249083 ],"samples_ts": [ 59.9957, 60.2735, 60.2566 ]}
+
+===== depth=96256 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 96256, "test_time": "2026-09-08T19:24:04Z", "avg_ns": 2346218741, "stddev_ns": 14689445, "avg_ts": 54.557289, "stddev_ts": 0.340359, "samples_ns": [ 2363163630, 2338404210, 2337088383 ],"samples_ts": [ 54.1647, 54.7382, 54.769 ]}
+
+===== depth=129024 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+llama-bench: benchmark 1/1: generation run 1/3
+llama-bench: benchmark 1/1: depth run 2/3 (cached)
+llama-bench: benchmark 1/1: generation run 2/3
+llama-bench: benchmark 1/1: depth run 3/3 (cached)
+llama-bench: benchmark 1/1: generation run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 4096, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 1, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 0, "n_gen": 128, "n_depth": 129024, "test_time": "2026-09-08T19:25:54Z", "avg_ns": 2572631814, "stddev_ns": 24649247, "avg_ts": 49.757525, "stddev_ts": 0.474144, "samples_ns": [ 2601063603, 2557273416, 2559558425 ],"samples_ts": [ 49.2106, 50.0533, 50.0086 ]}
+
+===== depth=260096 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup generation run
+llama-bench: benchmark 1/1: depth run 1/3
+
+[TIMEOUT after 300s - container killed]

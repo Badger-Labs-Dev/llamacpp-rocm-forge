@@ -15,7 +15,9 @@ function sensitivityNote(swingPct: number | undefined): string {
 
 /** Recommended config, each field annotated with how much it actually
  * mattered (from the tornado sensitivity data) - the point is telling
- * you which choices you can safely ignore, not just what the winner was. */
+ * you which choices you can safely ignore, not just what the winner was.
+ * Flash attention isn't swept (always "auto" - see FinalConfig.flash_attn)
+ * so it's shown informationally, without a sensitivity note. */
 export function RecommendationCard({ config, tuningLog }: Props) {
   const bars = sensitivityBars(tuningLog);
   const byStage = Object.fromEntries(bars.map((b) => [b.stage, b]));
@@ -23,8 +25,8 @@ export function RecommendationCard({ config, tuningLog }: Props) {
   const rows: { label: string; value: string; note: string }[] = [
     {
       label: "Flash attention",
-      value: config.flash_attn ? "on" : "off",
-      note: sensitivityNote(byStage["flash_attn"]?.swingPct),
+      value: config.flash_attn,
+      note: "— not swept; always \"auto\" (llama.cpp decides per model/backend).",
     },
     {
       label: "KV cache dtype",

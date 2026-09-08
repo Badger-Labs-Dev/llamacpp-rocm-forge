@@ -167,11 +167,12 @@ R9700 specifically — the host also exposes the Ryzen iGPU as `ROCm1`, and
 `llama-bench --list-devices` (run via `docker run ... llama-bench
 --list-devices`) shows both if you need to confirm device numbering.
 
-Full auto-tuned sweep — recommended default. Stages through flash-attn
-on/off, KV cache dtype (f16/q8_0/q4_0), then a ubatch × batch grid, each
-stage probing at 2 depths only (shallowest + deepest of the model's derived
-curve) to keep total runtime bounded; then runs the winning combination
-across the model's full depth curve exactly once:
+Full auto-tuned sweep — recommended default. Stages through KV cache
+dtype (f16/q8_0/q4_0), then a ubatch × batch grid, each stage probing at
+2 depths only (shallowest + deepest of the model's derived curve) to
+keep total runtime bounded; then runs the winning combination across the
+model's full depth curve exactly once. Flash-attn is always `auto` (see
+"Flash attention: always auto, never swept" below):
 
 ```bash
 uv run benchmark/run_bench.py \
@@ -184,12 +185,12 @@ Fixed config (fast, when you already know what you want):
 ```bash
 uv run benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
-  --ubatch 1024 --batch 2048 --ctk q8_0 --ctv q8_0 --flash-attn 1
+  --ubatch 1024 --batch 2048 --ctk q8_0 --ctv q8_0
 ```
 
-Legacy `--calibrate` (ubatch-only sweep, batch/KV/flash-attn held at
-defaults) is kept for results directories produced before the full sweep
-existed.
+Legacy `--calibrate` (ubatch-only sweep, batch/KV held at defaults, fa
+always `auto`) is kept for results directories produced before the full
+sweep existed.
 
 Multiple models in one campaign: repeat `--model` — each gets its own
 `<results-root>/<slug>/<run-id>/` directory (see "Results layout" above).
@@ -208,10 +209,11 @@ different purpose and format.
 ## What gets swept, and why not everything
 
 `llama-bench` exposes more knobs than we tune. `--full-sweep` covers
-ubatch, batch size, KV cache dtype, and flash-attention — the ones most
-likely to move throughput meaningfully on a single GPU. Left out
-deliberately:
+ubatch, batch size, and KV cache dtype — the ones most likely to move
+throughput meaningfully on a single GPU without llama.cpp already making
+a good decision on its own. Left out deliberately:
 
+- Flash attention — see "Flash attention: always auto, never swept" below.
 - `-ngl` (GPU layers) — only matters when a model doesn't fully fit in
   VRAM; irrelevant at `-ngl 99` for models that do.
 - `-sm` (split-mode), `-nkvo`/`-nopo`/`--no-host` (offload toggles) — only
@@ -221,18 +223,52 @@ deliberately:
   no flag for this; it's a `llama-server`/`llama-cli` feature (`-md`, a
   draft model), not something this throughput benchmark measures.
 
-A true grid over ubatch(4) × batch(4) × KV(3) × flash-attn(2) is 96
-combinations — infeasible to run at full depth × 3 repetitions per
-combination. `auto_tune()` in `run_bench.py` instead does staged
-(coordinate-descent) tuning: pick the best flash-attn setting, then the
-best KV cache dtype (with flash-attn forced on, since llama.cpp requires it
-whenever the KV cache is quantized), then the best ubatch/batch pair —
-carrying each stage's winner into the next rather than testing every
-combination of everything. This isn't guaranteed to find the true global
-optimum (coordinate descent can miss interactions between axes), but it's a
-reasonable tradeoff against runtime, and each run's `campaign_manifest.json`
-`tuning_log` records every stage's raw scores so you can see the tradeoffs
-the auto-tuner made and second-guess them if something looks off.
+A true grid over ubatch(4) × batch(4) × KV(3) is 48 combinations —
+infeasible to run at full depth × 3 repetitions per combination.
+`auto_tune()` in `run_bench.py` instead does staged (coordinate-descent)
+tuning: pick the best KV cache dtype (flash-attn always `auto`, forced to
+`on` if the chosen dtype requires it - see `BenchConfig.validate()`),
+then the best ubatch/batch pair — carrying each stage's winner into the
+next rather than testing every combination of everything. This isn't
+guaranteed to find the true global optimum (coordinate descent can miss
+interactions between axes), but it's a reasonable tradeoff against
+runtime, and each run's `campaign_manifest.json` `tuning_log` records
+every stage's raw scores so you can see the tradeoffs the auto-tuner made
+and second-guess them if something looks off.
+
+## Flash attention: always auto, never swept
+
+Earlier versions of this tool swept flash-attn (`-fa`) as a third stage
+alongside KV cache dtype, on the theory that it universally improves
+throughput. Direct testing on this GPU backed that up for the models
+tried so far — but it's not universal, and forcing `-fa on` everywhere
+would be actively wrong for some real architectures:
+
+- Flash attention's fused kernel doesn't support certain ops some model
+  architectures require (a KQ bias added directly to attention scores,
+  for one) — those architectures silently fall back to the ordinary
+  attention path regardless of the `-fa` flag, so forcing it on does
+  nothing but add a flag to the command line.
+- Kernel support is backend- and head-dimension-specific; a model with an
+  unusual head dimension can hit an unsupported combination even on a
+  backend that generally supports flash attention.
+- For a few architectures (sparse-attention models being the clearest
+  case), flash attention isn't just a speed optimization — the model was
+  trained expecting it, and disabling it changes output correctness, not
+  just throughput.
+
+llama.cpp's own `-fa` flag already encodes this judgment call: this
+build's `llama-bench`/`llama-cli` accept `-fa auto|on|off` (not the older
+boolean `0`/`1`, though those still parse as legacy aliases), with `auto`
+as the default. `auto` decides per model/backend at load time whether the
+fused kernel actually applies, falling back cleanly when it doesn't. Since
+that's already the more correct decision than a fixed `on`/`off` we'd
+otherwise be guessing at, `BenchConfig.flash_attn` is now always `"auto"`
+— not swept, not a `tuning_log` stage, no on/off comparison in the
+sensitivity chart. `BenchConfig.validate()` still forces it to `"on"` if
+the chosen KV cache dtype requires flash attention (a hard llama.cpp
+requirement, not a preference) and `"auto"` alone isn't guaranteed to
+satisfy that.
 
 ## Depths are derived per model, not fixed
 
@@ -323,15 +359,17 @@ renders three views per model:
    with, in completion order. This is the primary goal: seeing whether a
    ROCm or llama.cpp upgrade actually helped.
 2. **Parameter sensitivity** - a tornado chart, for a selected run: one bar
-   per swept parameter (flash-attn, KV cache dtype, ubatch×batch), sized by
-   the throughput swing between that parameter's best and worst tested
+   per swept parameter (KV cache dtype, ubatch×batch - flash-attn isn't
+   swept, see "Flash attention: always auto, never swept" above), sized
+   by the throughput swing between that parameter's best and worst tested
    candidate. Answers "how much does performance actually depend on this
    setting" at a glance, sorted biggest-impact-first.
-3. **Recommended settings** - the winning config for that run, each field
-   annotated with its sensitivity ("matters a lot" / "worth checking" /
-   "pick whatever's convenient") pulled from the same tornado data, so the
-   recommendation says which choices are safe to ignore, not just which one
-   won.
+3. **Recommended settings** - the winning config for that run, each swept
+   field annotated with its sensitivity ("matters a lot" / "worth
+   checking" / "pick whatever's convenient") pulled from the same tornado
+   data, so the recommendation says which choices are safe to ignore, not
+   just which one won. Flash attention is shown informationally
+   (always `auto`) without a sensitivity note, since it isn't swept.
 
 The sensitivity data comes from `--full-sweep`'s `tuning_log` (see "What
 gets swept" above) - fixed-config and `--calibrate` runs only contribute a

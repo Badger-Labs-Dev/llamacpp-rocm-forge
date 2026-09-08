@@ -1,0 +1,18 @@
+
+===== depth=0 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama-bench: benchmark 1/1: warmup prompt run
+llama-bench: benchmark 1/1: prompt run 1/3
+llama-bench: benchmark 1/1: prompt run 2/3
+llama-bench: benchmark 1/1: prompt run 3/3
+{"build_commit": "94761d304", "build_number": 9974, "cpu_info": "AMD Ryzen 5 9600X 6-Core Processor", "gpu_info": "AMD Radeon AI PRO R9700, AMD Radeon Graphics", "backends": "ROCm", "model_filename": "/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450", "model_type": "qwen35moe 35B.A3B Q4_K - Medium", "model_size": 22349466112, "model_n_params": 34660610688, "n_batch": 2048, "n_ubatch": 2048, "n_threads": 6, "cpu_mask": "0x0", "cpu_strict": false, "poll": 50, "type_k": "f16", "type_v": "f16", "n_gpu_layers": 99, "n_cpu_moe": 0, "split_mode": "layer", "main_gpu": 0, "no_kv_offload": false, "flash_attn": 0, "devices": "ROCm0", "tensor_split": "0.00", "tensor_buft_overrides": "none", "use_mmap": false, "use_direct_io": false, "embeddings": false, "no_op_offload": 0, "no_host": false, "fit_target": 0, "fit_min_ctx": 0, "n_prompt": 2048, "n_gen": 0, "n_depth": 0, "test_time": "2026-09-08T18:48:08Z", "avg_ns": 771490683, "stddev_ns": 4757222, "avg_ts": 2654.668170, "stddev_ts": 16.320283, "samples_ns": [ 776888284, 767908371, 769675394 ],"samples_ts": [ 2636.16, 2666.98, 2660.86 ]}
+
+===== depth=260096 =====
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 63552 MiB):
+  Device 0: AMD Radeon AI PRO R9700, gfx1201 (0x1201), VMM: no, Wave Size: 32, VRAM: 32624 MiB
+  Device 1: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 30928 MiB
+llama-bench: benchmark 1/1: starting
+llama_bench: error: failed to create context with model '/models/707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450'

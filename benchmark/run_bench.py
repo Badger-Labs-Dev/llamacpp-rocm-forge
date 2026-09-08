@@ -17,22 +17,34 @@ Falls back to LEGACY_FIXED_DEPTHS if a model's context_length can't be read.
 
 Tuning modes (pick one; --full-sweep is the general recommendation):
 
-  (default)     Fixed config: ubatch=2048, batch=2048, ctk/ctv=f16, fa=1.
+  (default)     Fixed config: ubatch=2048, batch=2048, ctk/ctv=f16, fa=auto.
   --ubatch N    Fixed config as above but with this ubatch.
   --calibrate   Legacy: sweep only UBATCH_CANDIDATES at depth 0, holding
-                batch/KV-cache/flash-attn at their defaults. Kept for
+                batch/KV-cache at their defaults (fa=auto). Kept for
                 backward compatibility with earlier results directories.
-  --full-sweep  Staged auto-tune across ubatch, batch, KV cache dtype
-                (f16/q8_0/q4_0), and flash-attn on/off - see auto_tune().
-                Runs a handful of quick 2-depth probes per stage rather
-                than a full grid (which would be 4 ubatch x 4 batch x 3 KV
-                x 2 FA = 96 combinations - infeasible to run at full depth
-                x 3 repetitions). The final chosen config is then run
-                across the model's full derived depth curve exactly once.
+  --full-sweep  Staged auto-tune across ubatch, batch, and KV cache dtype
+                (f16/q8_0/q4_0) - see auto_tune(). Runs a handful of quick
+                2-depth probes per stage rather than a full grid (which
+                would be 4 ubatch x 4 batch x 3 KV = 48 combinations -
+                infeasible to run at full depth x 3 repetitions). The
+                final chosen config is then run across the model's full
+                derived depth curve exactly once.
+
+Flash attention is not swept: always passed as "auto" (llama-bench's -fa
+auto|on|off, this build's own default), which lets llama.cpp decide per
+model/backend at load time whether the fused kernel actually applies.
+Forcing it "on" doesn't help on architectures where FA can't apply
+anyway (KQ-bias models, some hybrid/SSM architectures, unsupported head
+dims - these fall back to the ordinary attention path regardless of the
+flag, silently), and for a few architectures (e.g. sparse-attention
+models) FA isn't just a speed knob, disabling it changes output
+correctness. llama.cpp's own "auto" already encodes this judgment call
+better than we can by sweeping 0/1 ourselves.
 
 llama.cpp requires flash attention ON whenever KV cache is quantized
-(ctk/ctv != f16); auto_tune() enforces this rather than trying invalid
-combinations.
+(ctk/ctv != f16); BenchConfig.validate() enforces this rather than trying
+invalid combinations - "auto" alone isn't a safe default there, since
+auto isn't guaranteed to actually enable FA.
 
 Note: llama-bench has no flag for speculative decoding / multi-token
 prediction (MTP) - that's a llama-server/llama-cli feature (-md draft
@@ -75,8 +87,9 @@ LEGACY_FIXED_DEPTHS = (0, 8192, 16384, 24576, 32768, 40960, 49152, 57344, 65536)
 UBATCH_CANDIDATES = (256, 512, 1024, 2048)
 BATCH_CANDIDATES = (512, 1024, 2048, 4096)
 KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
-FLASH_ATTN_CANDIDATES = (1, 0)
-# KV cache dtypes that require flash attention (llama.cpp hard requirement).
+# KV cache dtypes that require flash attention (llama.cpp hard requirement -
+# the non-fused attention path can't read a quantized KV cache at all, this
+# isn't just a perf preference).
 KV_TYPES_REQUIRING_FA = frozenset({"q8_0", "q4_0", "q5_0", "q5_1", "q4_1", "iq4_nl"})
 
 PREFILL_TOKENS = 2048
@@ -97,15 +110,24 @@ class BenchConfig:
     batch: int = 2048
     ctk: str = "f16"
     ctv: str = "f16"
-    flash_attn: int = 1
+    flash_attn: str = "auto"  # llama-bench's -fa: "auto" | "on" | "off".
+        # "auto" lets llama.cpp decide per model/backend at load time
+        # whether the fused kernel applies (some architectures - KQ-bias
+        # models, certain hybrid/SSM models, unsupported head dims - fall
+        # back to the ordinary path regardless of this flag, silently).
+        # We stopped sweeping flash-attn on/off: forcing "on" doesn't help
+        # on architectures where FA can't apply anyway, and "auto" is
+        # already llama.cpp's own considered default as of this build.
 
     def tag(self) -> str:
         return f"ub{self.ubatch}_b{self.batch}_kv{self.ctk}-{self.ctv}_fa{self.flash_attn}"
 
     def validate(self) -> "BenchConfig":
-        """Force flash-attn on if the KV cache dtype requires it."""
-        if (self.ctk in KV_TYPES_REQUIRING_FA or self.ctv in KV_TYPES_REQUIRING_FA) and not self.flash_attn:
-            return replace(self, flash_attn=1)
+        """Force flash-attn on if the KV cache dtype requires it - "auto"
+        is not guaranteed to enable FA, but a quantized KV cache can only
+        be read via the fused kernel, so "auto" alone isn't safe here."""
+        if (self.ctk in KV_TYPES_REQUIRING_FA or self.ctv in KV_TYPES_REQUIRING_FA) and self.flash_attn == "off":
+            return replace(self, flash_attn="on")
         return self
 
 
@@ -226,7 +248,7 @@ def build_llama_bench_command(
         "-b", str(config.batch),
         "-ub", str(config.ubatch),
         "-ngl", str(GPU_LAYERS),
-        "-fa", str(config.flash_attn),
+        "-fa", config.flash_attn,
         "-mmp", "0",
         "-ctk", config.ctk,
         "-ctv", config.ctv,
@@ -455,38 +477,25 @@ def auto_tune(
     cooldown: int,
     log: list[dict],
 ) -> BenchConfig:
-    """Staged (coordinate-descent) auto-tune: flash-attn, then KV cache
-    dtype, then a ubatch x batch grid. Each stage probes at 2 depths
-    (shallowest + deepest) rather than the full curve, and carries its
-    winner into the next stage. Full grid search (ubatch x batch x KV x FA)
-    would be 4x4x3x2=96 configs at full depth x 3 reps - infeasible; this
-    keeps total probe count in the dozens instead.
+    """Staged (coordinate-descent) auto-tune: KV cache dtype, then a
+    ubatch x batch grid. Each stage probes at 2 depths (shallowest +
+    deepest) rather than the full curve, and carries its winner into the
+    next stage. Flash-attn is not swept - always "auto", letting
+    llama.cpp decide per model/backend whether the fused kernel applies
+    (see BenchConfig.flash_attn) - so this is a 2-stage search, not 3.
+    Full grid search (ubatch x batch x KV) would be 4x4x3=48 configs at
+    full depth x 3 reps - infeasible; this keeps total probe count in the
+    dozens instead.
     """
     probe_d = probe_depths(depths)
     print(f"  auto-tune: probing at depths {list(probe_d)}", flush=True)
 
-    # Stage 1: flash attention on/off, KV cache fixed at f16 (no FA requirement).
-    print("  [stage 1/3] flash attention on/off", flush=True)
-    fa_scores = {}
-    for fa in FLASH_ATTN_CANDIDATES:
-        cfg = BenchConfig(flash_attn=fa)
-        score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
-                              device=device, depths=probe_d, results_dir=results_dir)
-        fa_scores[fa] = score
-        print(f"    fa={fa}: mean_ts={score:.1f}", flush=True)
-        time.sleep(cooldown)
-    best_fa = max(fa_scores, key=lambda k: fa_scores[k])
-    log.append({"stage": "flash_attn", "scores": fa_scores, "winner": best_fa})
-    print(f"  stage 1 winner: fa={best_fa}", flush=True)
-
-    # Stage 2: KV cache dtype. Quantized KV requires FA on regardless of
-    # stage 1's result, so probe all KV candidates with FA forced on for a
-    # fair, valid comparison; only fall back to stage 1's FA winner at the
-    # end if the KV winner turns out to be f16 (which has no FA requirement).
-    print("  [stage 2/3] KV cache dtype (fa forced on for this stage)", flush=True)
+    # Stage 1: KV cache dtype, flash-attn always "auto" (quantized KV
+    # cache requires FA regardless, and validate() enforces that).
+    print("  [stage 1/2] KV cache dtype", flush=True)
     kv_scores = {}
     for kv in KV_CACHE_TYPES:
-        cfg = BenchConfig(ctk=kv, ctv=kv, flash_attn=1)
+        cfg = BenchConfig(ctk=kv, ctv=kv).validate()
         score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
                               device=device, depths=probe_d, results_dir=results_dir)
         kv_scores[kv] = score
@@ -494,21 +503,19 @@ def auto_tune(
         time.sleep(cooldown)
     best_kv = max(kv_scores, key=lambda k: kv_scores[k])
     log.append({"stage": "kv_cache_dtype", "scores": kv_scores, "winner": best_kv})
-    print(f"  stage 2 winner: kv={best_kv}", flush=True)
+    print(f"  stage 1 winner: kv={best_kv}", flush=True)
 
-    final_fa = 1 if best_kv in KV_TYPES_REQUIRING_FA else best_fa
-
-    # Stage 3: ubatch x batch grid, at the winning FA/KV, depth 0 only
+    # Stage 2: ubatch x batch grid, at the winning KV, depth 0 only
     # (batch/ubatch effects show up clearly even on a cold cache, and this
-    # keeps the grid's 16 combinations cheap).
-    print("  [stage 3/3] ubatch x batch grid (depth 0 only)", flush=True)
+    # keeps the grid's 13 valid combinations cheap).
+    print("  [stage 2/2] ubatch x batch grid (depth 0 only)", flush=True)
     grid_scores = {}
     grid_combo_lookup: dict[str, tuple[int, int]] = {}
     for ub in UBATCH_CANDIDATES:
         for b in BATCH_CANDIDATES:
             if ub > b:
                 continue  # llama.cpp requires ubatch <= batch
-            cfg = BenchConfig(ubatch=ub, batch=b, ctk=best_kv, ctv=best_kv, flash_attn=final_fa)
+            cfg = BenchConfig(ubatch=ub, batch=b, ctk=best_kv, ctv=best_kv).validate()
             score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
                                   device=device, depths=(0,), results_dir=results_dir)
             combo_key = f"ub{ub}_b{b}"
@@ -519,9 +526,9 @@ def auto_tune(
     best_combo = max(grid_scores, key=lambda k: grid_scores[k])
     best_ub, best_b = grid_combo_lookup[best_combo]
     log.append({"stage": "ubatch_batch_grid", "scores": grid_scores, "winner": best_combo})
-    print(f"  stage 3 winner: ubatch={best_ub} batch={best_b}", flush=True)
+    print(f"  stage 2 winner: ubatch={best_ub} batch={best_b}", flush=True)
 
-    return BenchConfig(ubatch=best_ub, batch=best_b, ctk=best_kv, ctv=best_kv, flash_attn=final_fa).validate()
+    return BenchConfig(ubatch=best_ub, batch=best_b, ctk=best_kv, ctv=best_kv).validate()
 
 
 def pick_best_ubatch(results_dir: Path, model: str, candidates: list[int]) -> int:
@@ -604,8 +611,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch", type=int, default=None, help="Fixed batch size (ignored with --full-sweep)")
     parser.add_argument("--ctk", default=None, help="Fixed KV cache key dtype, e.g. f16/q8_0/q4_0 (ignored with --full-sweep)")
     parser.add_argument("--ctv", default=None, help="Fixed KV cache value dtype (ignored with --full-sweep)")
-    parser.add_argument("--flash-attn", type=int, choices=(0, 1), default=None,
-                         help="Fixed flash-attn on/off (ignored with --full-sweep)")
+    parser.add_argument("--flash-attn", choices=("auto", "on", "off"), default=None,
+                         help="Fixed flash-attn mode (ignored with --full-sweep, which always "
+                              "uses 'auto' - see BenchConfig.flash_attn)")
     parser.add_argument("--cooldown", type=int, default=COOLDOWN_SECONDS)
     return parser.parse_args()
 
@@ -720,7 +728,7 @@ def main() -> None:
                 batch=args.batch or 2048,
                 ctk=args.ctk or "f16",
                 ctv=args.ctv or args.ctk or "f16",
-                flash_attn=1 if args.flash_attn is None else args.flash_attn,
+                flash_attn=args.flash_attn or "auto",
             ).validate()
             print(f"  using fixed config: {config.tag()}", flush=True)
 

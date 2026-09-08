@@ -16,7 +16,9 @@ export interface FinalConfig {
   batch: number;
   ctk: string;
   ctv: string;
-  flash_attn: number;
+  flash_attn: string; // "auto" | "on" | "off" - always "auto" as of the
+    // change that stopped sweeping this (llama.cpp's own default, lets
+    // it decide per model/backend whether the fused kernel applies)
 }
 
 export interface Environment {

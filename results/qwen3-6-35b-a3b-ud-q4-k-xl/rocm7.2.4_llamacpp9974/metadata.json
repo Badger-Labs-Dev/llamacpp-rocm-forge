@@ -1,0 +1,42 @@
+{
+  "depths_tested": [
+    0,
+    2048,
+    6144,
+    14336,
+    22528,
+    30720,
+    47104,
+    63488,
+    96256,
+    129024,
+    260096
+  ],
+  "environment": {
+    "build_commit": "94761d304",
+    "build_number": 9974,
+    "gpu_name": "AMD Radeon AI PRO R9700",
+    "gpu_vram_bytes": 34208743424,
+    "gpu_vram_gib": 31.9,
+    "host_kernel": "7.1.9-arch1-2",
+    "image": "r9700-llm-bench:rocm-7.2.4",
+    "rocm_version": "7.2.4.70204-93~24.04"
+  },
+  "final_config": {
+    "batch": 4096,
+    "ctk": "f16",
+    "ctv": "f16",
+    "flash_attn": 1,
+    "ubatch": 2048
+  },
+  "generation_tok_s_mean": 65.64907129999999,
+  "mode": "full-sweep",
+  "model_architecture": "qwen35moe",
+  "model_context_length": 262144,
+  "model_filename": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "model_name": "Qwen3.6-35B-A3B",
+  "model_slug": "qwen3-6-35b-a3b-ud-q4-k-xl",
+  "run_completed_at": "2026-09-08T19:33:58.248887+00:00",
+  "run_id": "rocm7.2.4_llamacpp9974",
+  "status": "partial"
+}
