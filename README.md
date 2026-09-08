@@ -46,7 +46,8 @@ R9700 specifically — the host also exposes the Ryzen iGPU as `ROCm1`, and
 --list-devices`) shows both if you need to confirm device numbering.
 
 Full calibrated run (sweeps ubatch 256/512/1024/2048 on prefill, then runs
-prefill+generation with the winner) at the default nine depths:
+prefill+generation with the winner) at depths derived from the model's own
+trained context length (see "Depths are derived per model" below):
 
 ```bash
 python3 benchmark/run_bench.py \
@@ -65,15 +66,38 @@ python3 benchmark/run_bench.py \
   --ubatch 1024
 ```
 
-Multiple models in one campaign: repeat `--model`. Override the depth sweep
-for a quick smoke test with `BENCH_DEPTHS="0,8192" python3 ...` (env var, not
-a flag — keeps the default nine-depth protocol as the un-overridden default
-so real comparisons don't accidentally use a truncated sweep).
+Multiple models in one campaign: repeat `--model`. Use `--max-depth N` to
+cap the depth sweep for a quick smoke test without waiting through a
+model's full context range.
 
 `benchmark/UPSTREAM_RUNBOOK_REFERENCE.md`, `run_calibrated_campaign.py`,
 `validate_campaign.py`, `generate_results_json.py`, and
 `merge_curve_summary.py` are upstream's originals, kept for reference; they
 depend on their Toolbx/Cockpit/SSH-host stack and don't run here as-is.
+
+## Depths are derived per model, not fixed
+
+`run_bench.py` reads each model's trained max context length straight from
+its GGUF metadata (`benchmark/gguf_info.py`, no extra dependencies — just
+`struct.unpack` over the GGUF key-value header) and tests every entry in a
+list of common context sizes (2048, 4096, 8192, ..., up to 262144) that fits
+under that limit, plus depth 0. A model's rotary position embeddings never
+saw positions past its trained context length, so testing beyond it
+produces a throughput number but not a meaningful one — the earlier fixed
+nine-depth list (0 through 65536 for every model) silently did this for any
+model with a shorter trained context, which is why this changed.
+
+Check what a model actually supports directly:
+
+```bash
+python3 benchmark/gguf_info.py ~/models/your-model.gguf
+```
+
+If a model's context length can't be read from its GGUF metadata,
+`run_bench.py` falls back to the original fixed nine-depth list and prints a
+warning. `campaign_manifest.json` records `context_length_by_model` and
+`depths_by_model` (replacing the old flat `depths` list) so a run's manifest
+shows exactly what was tested and why.
 
 ## Reading results: which ubatch to use
 
