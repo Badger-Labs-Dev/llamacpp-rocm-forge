@@ -23,10 +23,11 @@ applies to our hardware and workflow.
 
 ## Status
 
-Not yet adapted to run standalone. Next step: write a script that drives
-`llama-bench` through the same depth/ubatch sweep the upstream runbook
-defines, targeting a plain `docker run` container instead of their Toolbx +
-Cockpit stack.
+Working end-to-end. `benchmark/run_bench.py` drives `llama-bench` inside a
+plain `docker run` container through the depth/ubatch sweep, writing one
+JSONL per (model, series, ubatch), a `curve_summary.csv`, and a
+`campaign_manifest.json` per results directory. Validated with a smoke test
+(reduced depth set) against a small Qwen2.5-0.5B GGUF on the R9700.
 
 ## Building the image
 
@@ -35,14 +36,42 @@ cd docker
 docker build -f Dockerfile.rocm-7.2.4-rdma-fix.ubuntu -t r9700-llm-bench:rocm-7.2.4 .
 ```
 
-## Running the container
+## Running a benchmark
+
+GPU device access needs the host's `video`/`render` group GIDs passed into
+the container (the script resolves these automatically via `grp`, or pass
+`--gpu-gid` explicitly). `-dev ROCm0` in the script targets the discrete
+R9700 specifically — the host also exposes the Ryzen iGPU as `ROCm1`, and
+`llama-bench --list-devices` (run via `docker run ... llama-bench
+--list-devices`) shows both if you need to confirm device numbering.
+
+Full calibrated run (sweeps ubatch 256/512/1024/2048 on prefill, then runs
+prefill+generation with the winner) at the default nine depths:
 
 ```bash
-docker run -it --rm \
-  --device /dev/dri --device /dev/kfd \
-  --group-add video --group-add render \
-  --security-opt seccomp=unconfined \
-  --ipc=host \
-  -v ~/models:/models \
-  r9700-llm-bench:rocm-7.2.4
+python3 benchmark/run_bench.py \
+  --model ~/models/your-model.gguf \
+  --results-dir results/$(date -u +%Y%m%dT%H%M%SZ) \
+  --calibrate
 ```
+
+Skip calibration and force a known-good ubatch (faster, use once you already
+know the winner for a given model):
+
+```bash
+python3 benchmark/run_bench.py \
+  --model ~/models/your-model.gguf \
+  --results-dir results/$(date -u +%Y%m%dT%H%M%SZ) \
+  --ubatch 1024
+```
+
+Multiple models in one campaign: repeat `--model`. Override the depth sweep
+for a quick smoke test with `BENCH_DEPTHS="0,8192" python3 ...` (env var, not
+a flag — keeps the default nine-depth protocol as the un-overridden default
+so real comparisons don't accidentally use a truncated sweep).
+
+`benchmark/UPSTREAM_RUNBOOK_REFERENCE.md`, `run_calibrated_campaign.py`,
+`validate_campaign.py`, `generate_results_json.py`, and
+`merge_curve_summary.py` are upstream's originals, kept for reference; they
+depend on their Toolbx/Cockpit/SSH-host stack and don't run here as-is.
+
