@@ -73,33 +73,58 @@ stage's tuning scores, every run's status, the same completion timestamp as
 
 ## Pointing --model at your Hugging Face cache
 
-`--model` accepts any path, including files inside your Hugging Face hub
-cache (`~/.cache/huggingface/hub/models--ORG--REPO/snapshots/<hash>/*.gguf`)
-instead of copying/symlinking models into a dedicated directory first:
+`--model` accepts several kinds of Hugging Face reference directly, in
+addition to plain filesystem paths — resolved via
+`benchmark/hf_models.py`, which downloads through the standard Hugging
+Face cache (`huggingface_hub.hf_hub_download`) if the file isn't already
+present, or returns the cached path instantly if it is:
 
 ```bash
+# Exact file, the same URI shown by a model card's "Download with hf CLI" button
 python3 benchmark/run_bench.py \
-  --model ~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/*/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
+  --model "hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
   --full-sweep
+
+# Ollama-style tag, matching what the model card's "Use this model -> ollama"
+# button shows (hf.co/org/repo:QUANT) - just drop the hf.co/ prefix
+python3 benchmark/run_bench.py \
+  --model "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL" \
+  --full-sweep
+
+# Bare repo, no filename: lists .gguf files and prompts you to pick one
+# interactively (errors clearly instead of hanging if stdin isn't a TTY,
+# e.g. in a script or cron job - pass an exact file or quant tag there)
+python3 benchmark/run_bench.py --model "unsloth/Qwen3.6-35B-A3B-GGUF" --full-sweep
 ```
 
-HF's local cache stores each file as `snapshots/<hash>/model.gguf`, itself a
-symlink to `blobs/<content-hash>` (no `.gguf` extension) — `run_bench.py`
-resolves that symlink before mounting the file into the container, so the
-Docker mount always targets the real blob's parent directory, not the
-symlink's. `model_slug()` still derives from the *original* filename you
-passed (e.g. `qwen3-6-35b-a3b-ud-q4-k-xl`), not the meaningless blob hash,
-so results stay under a readable directory name either way. llama.cpp
-identifies GGUF files by their magic bytes, not their extension, so loading
-an extension-less blob directly works fine (verified against a real 35B
-model in this cache).
+`benchmark/hf_models.py` also works standalone, e.g. to just see what's in
+a repo without running a benchmark:
 
-`hf download <repo> <file> --local-dir ~/models/...` (what earlier examples
-in this README used) still works and is sometimes worth it deliberately —
-e.g. downloading straight into a NAS/lab-fileserver share instead of the
-per-user cache, or keeping benchmark inputs decoupled from whatever else on
-this machine touches the shared HF cache — but there's no correctness or
-performance reason to prefer it now that HF-cache paths work directly.
+```bash
+python3 benchmark/hf_models.py list unsloth/Qwen3.6-35B-A3B-GGUF
+```
+
+A plain filesystem path (`/home/...`, `./...`, `~/...`) is never
+misdetected as an HF reference — only `hf://...` or bare `org/repo[...]`
+forms with no leading slash trigger this path.
+
+HF's local cache stores each downloaded file as `snapshots/<hash>/model.gguf`,
+itself a symlink to `blobs/<content-hash>` (no `.gguf` extension) —
+`run_bench.py` resolves that symlink before mounting the file into the
+container, so the Docker mount always targets the real blob's parent
+directory, not the symlink's. `model_slug()` still derives from the
+*original* filename (e.g. `qwen3-6-35b-a3b-ud-q4-k-xl`), not the
+meaningless blob hash, so results stay under a readable directory name
+either way. llama.cpp identifies GGUF files by their magic bytes, not their
+extension, so loading an extension-less blob directly works fine (verified
+against a real 35B model in this cache).
+
+Copying models into a separate directory (e.g. `~/models/`, or `hf
+download ... --local-dir ...`) still works and is sometimes worth doing
+deliberately — e.g. pointing at a NAS/shared fileserver, or keeping
+benchmark inputs decoupled from whatever else on this machine touches the
+shared HF cache — but there's no correctness or performance reason to
+prefer it now that HF references and cache paths both work directly.
 
 ## Building the image
 

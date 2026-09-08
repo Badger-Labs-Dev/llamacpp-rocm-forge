@@ -57,6 +57,7 @@ from pathlib import Path
 
 from gguf_info import context_length, read_gguf_metadata
 import environment_info
+import hf_models
 
 # Common context-window sizes seen across model releases (powers of two, plus
 # the odd-but-common 24576/49152 seen in some Qwen configs). Depths are
@@ -445,7 +446,13 @@ def write_curve_summary(results: list[RunResult], summary_path: Path) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", action="append", required=True, help="Host path to a .gguf file (repeatable)")
+    parser.add_argument("--model", action="append", default=[],
+                         help="Host path to a .gguf file (repeatable). Also accepts Hugging "
+                              "Face references: hf://org/repo/file.gguf, org/repo, "
+                              "org/repo:QUANT (ollama-style tag), or org/repo/file.gguf - "
+                              "resolved via the local HF cache, downloading if not already "
+                              "present. org/repo with multiple .gguf files prompts an "
+                              "interactive picker.")
     parser.add_argument("--image", default="r9700-llm-bench:rocm-7.2.4", help="Docker image to benchmark")
     parser.add_argument("--device", default="ROCm0", help="llama-bench -dev target (default: ROCm0, the R9700)")
     parser.add_argument("--gpu-gid", action="append", default=[],
@@ -490,12 +497,24 @@ def main() -> None:
     if not gpu_gids:
         sys.exit("Could not resolve video/render group GIDs; pass --gpu-gid explicitly")
 
+    if not args.model:
+        sys.exit("At least one --model is required")
+
     # Keep the given path as-is (don't resolve symlinks here) - Hugging
     # Face cache entries are named model.gguf via a symlink to a
     # content-hash blob; resolving too early would make model_slug() use
     # the meaningless blob hash instead of the real model filename.
     # run_one() resolves symlinks separately, only for the Docker mount.
-    models = [Path(m).expanduser().absolute() for m in args.model]
+    models = []
+    for m in args.model:
+        if hf_models.looks_like_hf_reference(m):
+            try:
+                resolved = hf_models.resolve_hf_reference(m)
+            except hf_models.HfReferenceError as e:
+                sys.exit(f"Error resolving {m!r}: {e}")
+            models.append(Path(resolved))
+        else:
+            models.append(Path(m).expanduser().absolute())
     for model in models:
         if not model.is_file():
             sys.exit(f"Model file not found: {model}")
