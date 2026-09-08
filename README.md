@@ -71,6 +71,36 @@ throughput number. `campaign_manifest.json` keeps the full detail (every
 stage's tuning scores, every run's status, the same completion timestamp as
 `completed_at`) for deeper inspection.
 
+## Pointing --model at your Hugging Face cache
+
+`--model` accepts any path, including files inside your Hugging Face hub
+cache (`~/.cache/huggingface/hub/models--ORG--REPO/snapshots/<hash>/*.gguf`)
+instead of copying/symlinking models into a dedicated directory first:
+
+```bash
+python3 benchmark/run_bench.py \
+  --model ~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/*/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
+  --full-sweep
+```
+
+HF's local cache stores each file as `snapshots/<hash>/model.gguf`, itself a
+symlink to `blobs/<content-hash>` (no `.gguf` extension) — `run_bench.py`
+resolves that symlink before mounting the file into the container, so the
+Docker mount always targets the real blob's parent directory, not the
+symlink's. `model_slug()` still derives from the *original* filename you
+passed (e.g. `qwen3-6-35b-a3b-ud-q4-k-xl`), not the meaningless blob hash,
+so results stay under a readable directory name either way. llama.cpp
+identifies GGUF files by their magic bytes, not their extension, so loading
+an extension-less blob directly works fine (verified against a real 35B
+model in this cache).
+
+`hf download <repo> <file> --local-dir ~/models/...` (what earlier examples
+in this README used) still works and is sometimes worth it deliberately —
+e.g. downloading straight into a NAS/lab-fileserver share instead of the
+per-user cache, or keeping benchmark inputs decoupled from whatever else on
+this machine touches the shared HF cache — but there's no correctness or
+performance reason to prefer it now that HF-cache paths work directly.
+
 ## Building the image
 
 ```bash

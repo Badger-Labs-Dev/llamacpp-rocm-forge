@@ -210,7 +210,15 @@ def run_one(
     out_dir = results_dir / subdir if subdir else results_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    container_model_path = f"/models/{host_model_path.name}"
+    # Resolve symlinks before mounting: Hugging Face's local cache stores
+    # models as snapshots/<hash>/model.gguf -> ../../blobs/<blob-hash>, so
+    # mounting only the file's immediate parent directory (the snapshot
+    # dir) would leave the symlink target outside the mount, unreadable
+    # inside the container. Mounting the *real* file's parent directory
+    # works for both plain files (no-op, same directory either way) and
+    # HF-cache-style symlinks.
+    real_model_path = host_model_path.resolve()
+    container_model_path = f"/models/{real_model_path.name}"
     out_name = f"{model_key(str(host_model_path))}__{series}__{config.tag()}"
     jsonl_path = out_dir / f"{out_name}.jsonl"
     stderr_path = out_dir / f"{out_name}.stderr.log"
@@ -226,7 +234,7 @@ def run_one(
     docker_cmd = [
         "docker", "run", "--rm",
         *docker_gpu_args(gpu_gids),
-        "-v", f"{host_model_path.parent}:/models:ro",
+        "-v", f"{real_model_path.parent}:/models:ro",
         image,
         *bench_cmd,
     ]
@@ -482,7 +490,12 @@ def main() -> None:
     if not gpu_gids:
         sys.exit("Could not resolve video/render group GIDs; pass --gpu-gid explicitly")
 
-    models = [Path(m).resolve() for m in args.model]
+    # Keep the given path as-is (don't resolve symlinks here) - Hugging
+    # Face cache entries are named model.gguf via a symlink to a
+    # content-hash blob; resolving too early would make model_slug() use
+    # the meaningless blob hash instead of the real model filename.
+    # run_one() resolves symlinks separately, only for the Docker mount.
+    models = [Path(m).expanduser().absolute() for m in args.model]
     for model in models:
         if not model.is_file():
             sys.exit(f"Model file not found: {model}")
