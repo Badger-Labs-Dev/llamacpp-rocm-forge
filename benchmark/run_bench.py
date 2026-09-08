@@ -84,6 +84,11 @@ GENERATION_TOKENS = 128
 REPETITIONS = 3
 GPU_LAYERS = 99
 COOLDOWN_SECONDS = 10
+DEPTH_TIMEOUT_SECONDS = 300  # per-depth llama-bench invocation; OOM can hang
+                             # rather than error cleanly (see run_one), so a
+                             # subprocess timeout is the only reliable guard
+DEPTH_COOLDOWN_SECONDS = 2   # short pause between depths within one run_one()
+                             # call, distinct from --cooldown between configs
 
 
 @dataclass(frozen=True)
@@ -109,11 +114,16 @@ class RunResult:
     model: str
     series: str  # "prefill" or "generation"
     config: BenchConfig
-    status: str  # "ok", "failed"
+    status: str  # "ok" (all depths ran), "partial" (stopped early after a
+                 # depth failed/timed out, but at least one depth succeeded),
+                 # "failed" (no depth produced results)
     return_code: int
     jsonl_path: Path
     stderr_path: Path
     command: list[str]
+    depths_run: tuple[int, ...] = ()
+    depths_skipped: tuple[int, ...] = ()
+    stop_reason: str | None = None  # e.g. "depth 65536 timed out after 300s"
 
 
 # Names of docker containers currently running a benchmark, so they can be
@@ -205,7 +215,7 @@ def build_llama_bench_command(
     series: str,
     config: BenchConfig,
     device: str,
-    depths: tuple[int, ...],
+    depth: int,
 ) -> list[str]:
     cmd = [
         "llama-bench",
@@ -221,7 +231,7 @@ def build_llama_bench_command(
         "-ctk", config.ctk,
         "-ctv", config.ctv,
         "-dev", device,
-        "-d", ",".join(str(d) for d in depths),
+        "-d", str(depth),
         "--progress",
     ]
     if series == "prefill":
@@ -243,6 +253,21 @@ def run_one(
     results_dir: Path,
     subdir: str | None = None,
 ) -> RunResult:
+    """Run llama-bench once per depth, ascending (shallowest first).
+
+    Depths are run in separate `docker run` invocations rather than one
+    llama-bench call with a combined "-d" list, specifically so an
+    out-of-memory condition at a deep context doesn't take down the whole
+    curve: llama-bench streams JSONL results per depth as it completes
+    them (confirmed by direct testing - shallow depths finish and print
+    before a later depth OOMs), but a large KV cache allocation can also
+    just *hang* rather than error out cleanly, so a single multi-depth
+    invocation has no way to bail out of one bad depth and keep going.
+    Running depths ascending, one process per depth, with a timeout,
+    means: smaller/valid depths always get recorded, and a failure or
+    hang at some depth stops only the depths larger than it (they'd very
+    likely fail too - KV cache need only grows with depth).
+    """
     out_dir = results_dir / subdir if subdir else results_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,50 +283,109 @@ def run_one(
     out_name = f"{model_key(str(host_model_path))}__{series}__{config.tag()}"
     jsonl_path = out_dir / f"{out_name}.jsonl"
     stderr_path = out_dir / f"{out_name}.stderr.log"
-    container_name = f"r9700-llm-bench-{uuid.uuid4().hex[:12]}"
 
-    bench_cmd = build_llama_bench_command(
-        model_container_path=container_model_path,
-        series=series,
-        config=config,
-        device=device,
-        depths=depths,
-    )
+    sorted_depths = tuple(sorted(depths))
+    depths_run: list[int] = []
+    depths_skipped: list[int] = []
+    stop_reason: str | None = None
+    last_return_code = 0
+    last_command: list[str] = []
 
-    docker_cmd = [
-        "docker", "run", "--rm",
-        "--name", container_name,
-        *docker_gpu_args(gpu_gids),
-        "-v", f"{real_model_path.parent}:/models:ro",
-        image,
-        *bench_cmd,
-    ]
-
-    print(f"    $ {' '.join(docker_cmd)}", flush=True)
-
-    # Track the container name so a signal handler or atexit hook can
-    # `docker kill` it if this script gets interrupted mid-run (see
-    # _ACTIVE_CONTAINERS above) - a plain subprocess.run() here would leave
-    # an orphaned container (and its GPU memory) running if the parent
-    # process dies before the child does.
-    _ACTIVE_CONTAINERS.add(container_name)
+    jsonl_f = jsonl_path.open("w", encoding="utf-8")
+    stderr_f = stderr_path.open("w", encoding="utf-8")
     try:
-        with jsonl_path.open("w", encoding="utf-8") as out_f, \
-             stderr_path.open("w", encoding="utf-8") as err_f:
-            proc = subprocess.run(docker_cmd, stdout=out_f, stderr=err_f)
-    finally:
-        _ACTIVE_CONTAINERS.discard(container_name)
+        for i, depth in enumerate(sorted_depths):
+            if stop_reason is not None:
+                depths_skipped.append(depth)
+                continue
 
-    status = "ok" if proc.returncode == 0 and jsonl_path.stat().st_size > 0 else "failed"
+            container_name = f"r9700-llm-bench-{uuid.uuid4().hex[:12]}"
+            bench_cmd = build_llama_bench_command(
+                model_container_path=container_model_path,
+                series=series, config=config, device=device, depth=depth,
+            )
+            docker_cmd = [
+                "docker", "run", "--rm",
+                "--name", container_name,
+                *docker_gpu_args(gpu_gids),
+                "-v", f"{real_model_path.parent}:/models:ro",
+                image,
+                *bench_cmd,
+            ]
+            last_command = docker_cmd
+            print(f"    $ {' '.join(docker_cmd)}", flush=True)
+
+            stderr_f.write(f"\n===== depth={depth} =====\n")
+            stderr_f.flush()
+
+            # Track the container name so a signal handler or atexit hook
+            # can `docker kill` it if this script gets interrupted mid-run
+            # (see _ACTIVE_CONTAINERS above), and so a *timeout* here can
+            # kill the specific container that hung rather than leaving it
+            # running - subprocess.run(timeout=...) only kills the direct
+            # child (docker CLI), not the container it started, so without
+            # an explicit `docker kill` a timed-out depth would leak VRAM
+            # exactly like an interrupted run would.
+            _ACTIVE_CONTAINERS.add(container_name)
+            try:
+                proc = subprocess.run(
+                    docker_cmd, stdout=jsonl_f, stderr=stderr_f,
+                    timeout=DEPTH_TIMEOUT_SECONDS,
+                )
+                last_return_code = proc.returncode
+                if proc.returncode != 0:
+                    stop_reason = (
+                        f"depth {depth} failed (rc={proc.returncode}); "
+                        f"skipping larger depths"
+                    )
+                    print(f"    FAILED at depth={depth} (rc={proc.returncode}); "
+                          f"skipping remaining {len(sorted_depths) - i - 1} larger depth(s)",
+                          flush=True)
+                else:
+                    depths_run.append(depth)
+            except subprocess.TimeoutExpired:
+                subprocess.run(["docker", "kill", container_name], capture_output=True)
+                last_return_code = -1
+                stop_reason = (
+                    f"depth {depth} timed out after {DEPTH_TIMEOUT_SECONDS}s "
+                    f"(likely OOM/thrashing rather than a clean error); "
+                    f"skipping larger depths"
+                )
+                stderr_f.write(f"\n[TIMEOUT after {DEPTH_TIMEOUT_SECONDS}s - container killed]\n")
+                stderr_f.flush()
+                print(f"    TIMEOUT at depth={depth} after {DEPTH_TIMEOUT_SECONDS}s "
+                      f"(container killed); skipping remaining "
+                      f"{len(sorted_depths) - i - 1} larger depth(s)", flush=True)
+            finally:
+                _ACTIVE_CONTAINERS.discard(container_name)
+
+            if stop_reason is None and i < len(sorted_depths) - 1:
+                time.sleep(DEPTH_COOLDOWN_SECONDS)
+    finally:
+        jsonl_f.close()
+        stderr_f.close()
+
+    if not depths_run:
+        status = "failed"
+    elif stop_reason is not None:
+        # At least one depth (possibly the last one) never produced
+        # results - "ok" would wrongly imply the full curve is complete.
+        status = "partial"
+    else:
+        status = "ok"
+
     return RunResult(
         model=str(host_model_path),
         series=series,
         config=config,
         status=status,
-        return_code=proc.returncode,
+        return_code=last_return_code,
         jsonl_path=jsonl_path,
         stderr_path=stderr_path,
-        command=docker_cmd,
+        command=last_command,
+        depths_run=tuple(depths_run),
+        depths_skipped=tuple(depths_skipped),
+        stop_reason=stop_reason,
     )
 
 
@@ -654,6 +738,7 @@ def main() -> None:
         summary_path = model_results_dir / "curve_summary.csv"
         rows = write_curve_summary(results, summary_path)
         failed = [r for r in results if r.status == "failed"]
+        partial = [r for r in results if r.status == "partial"]
         mode = "full-sweep" if args.full_sweep else ("calibrate-legacy" if args.calibrate else "fixed")
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -671,7 +756,11 @@ def main() -> None:
             "completed_at": completed_at,
             "summary_rows": rows,
             "runs": [
-                {"series": r.series, "config": asdict(r.config), "status": r.status, "return_code": r.return_code}
+                {
+                    "series": r.series, "config": asdict(r.config), "status": r.status,
+                    "return_code": r.return_code, "depths_run": list(r.depths_run),
+                    "depths_skipped": list(r.depths_skipped), "stop_reason": r.stop_reason,
+                }
                 for r in results
             ],
         }
@@ -698,27 +787,37 @@ def main() -> None:
             "final_config": asdict(config),
             "depths_tested": list(depths),
             "generation_tok_s_mean": best_depth0_ts,
-            "status": "failed" if failed else "finished",
+            "status": "failed" if failed else ("partial" if partial else "finished"),
         }
         (model_results_dir / "metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
-        marker = "campaign.failed" if failed else "campaign.finished"
+        marker = "campaign.failed" if failed else ("campaign.partial" if partial else "campaign.finished")
         (model_results_dir / marker).touch()
 
         print(f"  Curve summary: {summary_path} ({rows} rows)", flush=True)
         if failed:
             for r in failed:
                 print(f"  FAILED: {r.model} {r.series} {r.config.tag()} (see {r.stderr_path})", flush=True)
+        if partial:
+            for r in partial:
+                print(f"  PARTIAL: {r.model} {r.series} {r.config.tag()}: {r.stop_reason} "
+                      f"(ran depths {list(r.depths_run)}, skipped {list(r.depths_skipped)})", flush=True)
 
     any_failed = False
+    any_partial = False
     for model in models:
         slug = model_slug(model)
-        if (args.results_root / slug / run_id / "campaign.failed").exists():
+        run_dir = args.results_root / slug / run_id
+        if (run_dir / "campaign.failed").exists():
             any_failed = True
+        elif (run_dir / "campaign.partial").exists():
+            any_partial = True
     if any_failed:
         sys.exit(1)
+    if any_partial:
+        sys.exit(2)
 
 
 if __name__ == "__main__":

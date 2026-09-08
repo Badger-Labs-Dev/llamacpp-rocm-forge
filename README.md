@@ -250,18 +250,37 @@ warning. Each run's `campaign_manifest.json` records `context_length` and
 `depths` (per-model now, since each model gets its own manifest — see
 "Results layout" above).
 
-**Large-context models can legitimately OOM at their deepest tested
-depth.** A model with a 262144 trained context length will have that
-depth included in its sweep — a KV cache that large for a 30B+ model can
-exceed the R9700's 32GB VRAM outright. `llama-bench` reports this as
-`failed to load model` / `cudaMalloc failed: out of memory` in the
-relevant `.stderr.log`, and `run_bench.py` records that probe/run as
-`failed` rather than crashing the whole sweep. If every probe in a run
-fails (not just the deepest one), that's a different problem - check for a
+**Large-context models can legitimately OOM (or hang) at their deepest
+tested depth.** A model with a 262144 trained context length will have
+that depth included in its sweep — a KV cache that large for a 30B+ model
+can exceed the R9700's 32GB VRAM outright. `run_bench.py` runs depths
+**ascending, one `docker run` per depth**, specifically to handle this:
+smaller depths always get recorded before a large one is even attempted,
+and if a depth fails (non-zero exit) or hangs, only the *larger* depths in
+that run are skipped — everything smaller is kept.
+
+This ascending/skip behavior exists because direct testing showed
+out-of-memory at a large depth doesn't always fail cleanly — it can
+**hang** (observed: a 35B model at its full 262K context sat at ~97% VRAM
+used and never returned, rather than erroring). A clean subprocess error
+wouldn't need this; a hang needs an explicit timeout, so each per-depth
+invocation gets `DEPTH_TIMEOUT_SECONDS` (300s default) and the container
+is force-killed if it's hit.
+
+A run where every depth ran is `"ok"`; one where a later depth
+failed/timed out but earlier ones succeeded is `"partial"` (both in
+`campaign_manifest.json`'s per-run `status` and as a `campaign.partial`
+marker file, distinct from `campaign.failed`); one where the *first*
+depth already failed is `"failed"`. Check `stop_reason` and
+`depths_skipped` in `campaign_manifest.json`, or the relevant
+`.stderr.log`, to see exactly what happened. If *every* depth in a run
+fails (not just deep ones), that's a different problem — check for a
 stray container still holding VRAM from an earlier interrupted run (see
 "Recovering from an interrupted run" below) before assuming it's a
 context-size issue. Use `--max-depth N` to cap the sweep below a model's
-full context if you don't need numbers at its absolute limit.
+full context if you don't need numbers at its absolute limit, or just
+accept the partial curve — you still get every depth up to the point it
+broke.
 
 ## Reading results: which ubatch to use
 
@@ -287,12 +306,15 @@ Add `--json` for machine-readable output.
 ## Recovering from an interrupted run
 
 Each `docker run` this script launches gets a unique
-`--name r9700-llm-bench-<random>` container name, and Ctrl-C/SIGTERM/an
-unhandled exception in `run_bench.py` kills any containers it started
-before exiting (`_install_cleanup_handlers()` in `run_bench.py`). A `kill
--9` on the Python process bypasses that (SIGKILL can't be caught), so if a
-run ever gets forcefully killed and you notice VRAM staying pinned
-afterward, clean up by hand:
+`--name r9700-llm-bench-<random>` container name. Three things clean these
+up: Ctrl-C/SIGTERM/an unhandled exception in `run_bench.py` kills any
+containers it started before exiting (`_install_cleanup_handlers()`); a
+per-depth `docker kill` fires if that depth's invocation exceeds
+`DEPTH_TIMEOUT_SECONDS` (a hang, not just an error - see "Depths are
+derived per model" above); and `--rm` removes each container once it
+exits normally. A `kill -9` on the Python process bypasses the first
+mechanism (SIGKILL can't be caught), so if a run ever gets forcefully
+killed and you notice VRAM staying pinned afterward, clean up by hand:
 
 ```bash
 docker ps --filter name=r9700-llm-bench- --format '{{.Names}}'
