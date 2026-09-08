@@ -9,6 +9,27 @@ setup (Fedora Toolbx + their own "AI Toolbox Cockpit" orchestration tooling
 across their own SSH hosts). This repo strips that down to what actually
 applies to our hardware and workflow.
 
+## Prerequisites
+
+- Docker, with the `r9700-llm-bench:rocm-7.2.4` image built (see "Building
+  the image" below).
+- [`uv`](https://docs.astral.sh/uv/) — manages this repo's Python
+  environment so the benchmark scripts don't depend on whatever
+  `python3`/pip packages happen to be on your `PATH`. Install once:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- Create the project's virtual environment (installs `huggingface_hub`,
+  the only real dependency — everything else the scripts use is Python
+  stdlib):
+  ```bash
+  uv sync
+  ```
+  This creates `.venv/` and `uv.lock` in the repo root. Re-run `uv sync`
+  any time `pyproject.toml`'s dependencies change; you don't need to
+  activate the venv yourself — every example below uses `uv run`, which
+  finds and uses it automatically.
+
 ## Contents
 
 - `docker/` - the Dockerfile (Ubuntu 24.04 base, ROCm 7.2.4, gfx1201 target)
@@ -24,10 +45,9 @@ applies to our hardware and workflow.
 ## Status
 
 Working end-to-end. `benchmark/run_bench.py` drives `llama-bench` inside a
-plain `docker run` container through the depth/ubatch sweep, writing one
-JSONL per (model, series, ubatch), a `curve_summary.csv`, and a
-`campaign_manifest.json` per results directory. Validated with a smoke test
-(reduced depth set) against a small Qwen2.5-0.5B GGUF on the R9700.
+plain `docker run` container through a parameter sweep, writing one JSONL
+per (model, series, config), a `curve_summary.csv`, and a
+`campaign_manifest.json`/`metadata.json` per run directory.
 
 ## Results layout
 
@@ -81,27 +101,27 @@ present, or returns the cached path instantly if it is:
 
 ```bash
 # Exact file, the same URI shown by a model card's "Download with hf CLI" button
-python3 benchmark/run_bench.py \
+uv run benchmark/run_bench.py \
   --model "hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
   --full-sweep
 
 # Ollama-style tag, matching what the model card's "Use this model -> ollama"
 # button shows (hf.co/org/repo:QUANT) - just drop the hf.co/ prefix
-python3 benchmark/run_bench.py \
+uv run benchmark/run_bench.py \
   --model "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL" \
   --full-sweep
 
 # Bare repo, no filename: lists .gguf files and prompts you to pick one
 # interactively (errors clearly instead of hanging if stdin isn't a TTY,
 # e.g. in a script or cron job - pass an exact file or quant tag there)
-python3 benchmark/run_bench.py --model "unsloth/Qwen3.6-35B-A3B-GGUF" --full-sweep
+uv run benchmark/run_bench.py --model "unsloth/Qwen3.6-35B-A3B-GGUF" --full-sweep
 ```
 
 `benchmark/hf_models.py` also works standalone, e.g. to just see what's in
 a repo without running a benchmark:
 
 ```bash
-python3 benchmark/hf_models.py list unsloth/Qwen3.6-35B-A3B-GGUF
+uv run benchmark/hf_models.py list unsloth/Qwen3.6-35B-A3B-GGUF
 ```
 
 A plain filesystem path (`/home/...`, `./...`, `~/...`) is never
@@ -149,7 +169,7 @@ curve) to keep total runtime bounded; then runs the winning combination
 across the model's full depth curve exactly once:
 
 ```bash
-python3 benchmark/run_bench.py \
+uv run benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
   --full-sweep
 ```
@@ -157,7 +177,7 @@ python3 benchmark/run_bench.py \
 Fixed config (fast, when you already know what you want):
 
 ```bash
-python3 benchmark/run_bench.py \
+uv run benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
   --ubatch 1024 --batch 2048 --ctk q8_0 --ctv q8_0 --flash-attn 1
 ```
@@ -167,7 +187,7 @@ defaults) is kept for results directories produced before the full sweep
 existed.
 
 Multiple models in one campaign: repeat `--model` — each gets its own
-`<results-root>/<slug>/<run-id>/` directory (see "Results layout" below).
+`<results-root>/<slug>/<run-id>/` directory (see "Results layout" above).
 Use `--max-depth N` to cap the depth sweep for a quick smoke test without
 waiting through a model's full context range. Use `--force` to overwrite an
 existing run directory (same model + same ROCm/llama.cpp versions).
@@ -221,7 +241,7 @@ model with a shorter trained context, which is why this changed.
 Check what a model actually supports directly:
 
 ```bash
-python3 benchmark/gguf_info.py ~/models/your-model.gguf
+uv run benchmark/gguf_info.py ~/models/your-model.gguf
 ```
 
 If a model's context length can't be read from its GGUF metadata,
@@ -236,7 +256,7 @@ warning. Each run's `campaign_manifest.json` records `context_length` and
 directory containing one) and recommends a ubatch per model:
 
 ```bash
-python3 benchmark/recommend_settings.py results/qwen2-5-0-5b-instruct-q4-k-m/rocm7.2.4_llamacpp9974
+uv run benchmark/recommend_settings.py results/qwen2-5-0-5b-instruct-q4-k-m/rocm7.2.4_llamacpp9974
 ```
 
 It checks three things, since a naive "best depth-0 throughput" pick (what
@@ -250,5 +270,3 @@ disagree with what's actually best across the full context range:
 When these disagree, the script recommends the mean-curve winner and says so
 explicitly, rather than silently trusting the depth-0-only calibration pass.
 Add `--json` for machine-readable output.
-
-

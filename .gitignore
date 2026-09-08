@@ -1,3 +1,4 @@
 results/
 *.pyc
 __pycache__/
+.venv/

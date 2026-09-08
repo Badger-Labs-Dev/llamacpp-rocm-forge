@@ -1,0 +1,11 @@
+[project]
+name = "r9700-llm-bench"
+version = "0.1.0"
+description = "llama.cpp + ROCm benchmarking scripts for AMD Radeon AI PRO R9700"
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface_hub>=0.25",
+]
+
+[tool.uv]
+package = false
