@@ -45,26 +45,31 @@ R9700 specifically — the host also exposes the Ryzen iGPU as `ROCm1`, and
 `llama-bench --list-devices` (run via `docker run ... llama-bench
 --list-devices`) shows both if you need to confirm device numbering.
 
-Full calibrated run (sweeps ubatch 256/512/1024/2048 on prefill, then runs
-prefill+generation with the winner) at depths derived from the model's own
-trained context length (see "Depths are derived per model" below):
+Full auto-tuned sweep — recommended default. Stages through flash-attn
+on/off, KV cache dtype (f16/q8_0/q4_0), then a ubatch × batch grid, each
+stage probing at 2 depths only (shallowest + deepest of the model's derived
+curve) to keep total runtime bounded; then runs the winning combination
+across the model's full depth curve exactly once:
 
 ```bash
 python3 benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
   --results-dir results/$(date -u +%Y%m%dT%H%M%SZ) \
-  --calibrate
+  --full-sweep
 ```
 
-Skip calibration and force a known-good ubatch (faster, use once you already
-know the winner for a given model):
+Fixed config (fast, when you already know what you want):
 
 ```bash
 python3 benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
   --results-dir results/$(date -u +%Y%m%dT%H%M%SZ) \
-  --ubatch 1024
+  --ubatch 1024 --batch 2048 --ctk q8_0 --ctv q8_0 --flash-attn 1
 ```
+
+Legacy `--calibrate` (ubatch-only sweep, batch/KV/flash-attn held at
+defaults) is kept for results directories produced before the full sweep
+existed.
 
 Multiple models in one campaign: repeat `--model`. Use `--max-depth N` to
 cap the depth sweep for a quick smoke test without waiting through a
@@ -74,6 +79,35 @@ model's full context range.
 `validate_campaign.py`, `generate_results_json.py`, and
 `merge_curve_summary.py` are upstream's originals, kept for reference; they
 depend on their Toolbx/Cockpit/SSH-host stack and don't run here as-is.
+
+## What gets swept, and why not everything
+
+`llama-bench` exposes more knobs than we tune. `--full-sweep` covers
+ubatch, batch size, KV cache dtype, and flash-attention — the ones most
+likely to move throughput meaningfully on a single GPU. Left out
+deliberately:
+
+- `-ngl` (GPU layers) — only matters when a model doesn't fully fit in
+  VRAM; irrelevant at `-ngl 99` for models that do.
+- `-sm` (split-mode), `-nkvo`/`-nopo`/`--no-host` (offload toggles) — only
+  matter for multi-GPU or specific memory-pressure scenarios, not a
+  single-R9700 setup.
+- Speculative decoding / multi-token prediction (MTP) — `llama-bench` has
+  no flag for this; it's a `llama-server`/`llama-cli` feature (`-md`, a
+  draft model), not something this throughput benchmark measures.
+
+A true grid over ubatch(4) × batch(4) × KV(3) × flash-attn(2) is 96
+combinations — infeasible to run at full depth × 3 repetitions per
+combination. `auto_tune()` in `run_bench.py` instead does staged
+(coordinate-descent) tuning: pick the best flash-attn setting, then the
+best KV cache dtype (with flash-attn forced on, since llama.cpp requires it
+whenever the KV cache is quantized), then the best ubatch/batch pair —
+carrying each stage's winner into the next rather than testing every
+combination of everything. This isn't guaranteed to find the true global
+optimum (coordinate descent can miss interactions between axes), but it's a
+reasonable tradeoff against runtime, and `campaign_manifest.json`'s
+`tuning_log_by_model` records every stage's raw scores so you can see the
+tradeoffs the auto-tuner made and second-guess them if something looks off.
 
 ## Depths are derived per model, not fixed
 
