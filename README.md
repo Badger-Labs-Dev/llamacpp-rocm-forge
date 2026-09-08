@@ -29,6 +29,46 @@ JSONL per (model, series, ubatch), a `curve_summary.csv`, and a
 `campaign_manifest.json` per results directory. Validated with a smoke test
 (reduced depth set) against a small Qwen2.5-0.5B GGUF on the R9700.
 
+## Results layout
+
+```
+results/
+  <model-slug>/                        e.g. qwen2-5-0-5b-instruct-q4-k-m
+    <run-id>/                          e.g. rocm7.2.4_llamacpp9974
+      metadata.json                    compact, for a future results webpage
+      campaign_manifest.json           full detail: config, tuning log, depths
+      curve_summary.csv                one row per (series, depth)
+      *.jsonl / *.stderr.log           raw llama-bench output per series
+      tuning/                          --full-sweep probe artifacts, if used
+```
+
+`<model-slug>` is derived from the GGUF filename (lowercased,
+non-alphanumerics collapsed to `-`) — one real model+quant keeps the same
+slug across every run, so results for it live together regardless of when
+they were produced.
+
+`<run-id>` is `rocm<version>_llamacpp<build-number>` — no date/timestamp.
+The intent is to track results **across llama.cpp/ROCm versions over time**
+(for an eventual static webpage comparing how a model's numbers change as
+those versions move), so the versions themselves are the identity, not the
+clock. `run_bench.py` queries both directly from the container
+(`benchmark/environment_info.py`: `dpkg-query` for rocm-core, `llama-cli
+--version` for the build) rather than trusting the image tag, which could
+drift out of sync with what's actually installed.
+
+Re-running the same model against the same ROCm+llama.cpp versions collides
+on the same `run-id` on purpose — `run_bench.py` refuses to overwrite an
+existing run directory unless you pass `--force`. `--results-root` sets the
+root (default `./results`); each `--model` gets its own
+`<results-root>/<slug>/<run-id>/` even within one invocation.
+
+`metadata.json` is the compact, purpose-built file for a future site
+generator to read across many run directories without parsing every CSV:
+model name/architecture/context-length, the full environment (ROCm version,
+llama.cpp build, GPU name/VRAM, host kernel), the final chosen config, and a
+summary throughput number. `campaign_manifest.json` keeps the full detail
+(every stage's tuning scores, every run's status) for deeper inspection.
+
 ## Building the image
 
 ```bash
@@ -54,7 +94,6 @@ across the model's full depth curve exactly once:
 ```bash
 python3 benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
-  --results-dir results/$(date -u +%Y%m%dT%H%M%SZ) \
   --full-sweep
 ```
 
@@ -63,7 +102,6 @@ Fixed config (fast, when you already know what you want):
 ```bash
 python3 benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
-  --results-dir results/$(date -u +%Y%m%dT%H%M%SZ) \
   --ubatch 1024 --batch 2048 --ctk q8_0 --ctv q8_0 --flash-attn 1
 ```
 
@@ -71,9 +109,11 @@ Legacy `--calibrate` (ubatch-only sweep, batch/KV/flash-attn held at
 defaults) is kept for results directories produced before the full sweep
 existed.
 
-Multiple models in one campaign: repeat `--model`. Use `--max-depth N` to
-cap the depth sweep for a quick smoke test without waiting through a
-model's full context range.
+Multiple models in one campaign: repeat `--model` — each gets its own
+`<results-root>/<slug>/<run-id>/` directory (see "Results layout" below).
+Use `--max-depth N` to cap the depth sweep for a quick smoke test without
+waiting through a model's full context range. Use `--force` to overwrite an
+existing run directory (same model + same ROCm/llama.cpp versions).
 
 `benchmark/UPSTREAM_RUNBOOK_REFERENCE.md`, `run_calibrated_campaign.py`,
 `validate_campaign.py`, `generate_results_json.py`, and
@@ -105,9 +145,9 @@ whenever the KV cache is quantized), then the best ubatch/batch pair —
 carrying each stage's winner into the next rather than testing every
 combination of everything. This isn't guaranteed to find the true global
 optimum (coordinate descent can miss interactions between axes), but it's a
-reasonable tradeoff against runtime, and `campaign_manifest.json`'s
-`tuning_log_by_model` records every stage's raw scores so you can see the
-tradeoffs the auto-tuner made and second-guess them if something looks off.
+reasonable tradeoff against runtime, and each run's `campaign_manifest.json`
+`tuning_log` records every stage's raw scores so you can see the tradeoffs
+the auto-tuner made and second-guess them if something looks off.
 
 ## Depths are derived per model, not fixed
 
@@ -129,9 +169,9 @@ python3 benchmark/gguf_info.py ~/models/your-model.gguf
 
 If a model's context length can't be read from its GGUF metadata,
 `run_bench.py` falls back to the original fixed nine-depth list and prints a
-warning. `campaign_manifest.json` records `context_length_by_model` and
-`depths_by_model` (replacing the old flat `depths` list) so a run's manifest
-shows exactly what was tested and why.
+warning. Each run's `campaign_manifest.json` records `context_length` and
+`depths` (per-model now, since each model gets its own manifest — see
+"Results layout" above).
 
 ## Reading results: which ubatch to use
 
@@ -139,7 +179,7 @@ shows exactly what was tested and why.
 directory containing one) and recommends a ubatch per model:
 
 ```bash
-python3 benchmark/recommend_settings.py results/20260908T144845Z
+python3 benchmark/recommend_settings.py results/qwen2-5-0-5b-instruct-q4-k-m/rocm7.2.4_llamacpp9974
 ```
 
 It checks three things, since a naive "best depth-0 throughput" pick (what

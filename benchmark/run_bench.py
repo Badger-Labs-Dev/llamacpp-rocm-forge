@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import subprocess
 import sys
 import time
@@ -54,6 +55,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from gguf_info import context_length, read_gguf_metadata
+import environment_info
 
 # Common context-window sizes seen across model releases (powers of two, plus
 # the odd-but-common 24576/49152 seen in some Qwen configs). Depths are
@@ -111,6 +113,14 @@ class RunResult:
 
 def model_key(model_path: str) -> str:
     return Path(model_path).name
+
+
+def model_slug(model_path: Path) -> str:
+    """Filesystem-safe identity for a model: its filename without the
+    .gguf extension, lowercased, non-alphanumerics collapsed to '-'."""
+    stem = model_path.stem
+    slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+    return slug or "model"
 
 
 def derive_depths_for_model(model_path: Path) -> tuple[tuple[int, ...], int | None]:
@@ -432,7 +442,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-gid", action="append", default=[],
                          help="Host GID(s) for /dev/dri and /dev/kfd access (repeatable); "
                               "defaults to `video` and `render` group GIDs on this host")
-    parser.add_argument("--results-dir", required=True, type=Path)
+    parser.add_argument("--results-root", type=Path, default=Path("results"),
+                         help="Root results directory; each model gets "
+                              "<results-root>/<model-slug>/<run-id>/ (default: ./results)")
+    parser.add_argument("--force", action="store_true",
+                         help="Overwrite an existing run directory instead of refusing")
     parser.add_argument("--calibrate", action="store_true",
                          help="Legacy: sweep only ubatch at depth 0, other params fixed at defaults")
     parser.add_argument("--full-sweep", action="store_true",
@@ -467,29 +481,37 @@ def main() -> None:
     if not gpu_gids:
         sys.exit("Could not resolve video/render group GIDs; pass --gpu-gid explicitly")
 
-    if args.results_dir.exists() and any(args.results_dir.iterdir()):
-        sys.exit(f"Refusing to write into non-empty results dir: {args.results_dir}")
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-
     models = [Path(m).resolve() for m in args.model]
     for model in models:
         if not model.is_file():
             sys.exit(f"Model file not found: {model}")
 
-    results: list[RunResult] = []
-    depths_by_model: dict[str, tuple[int, ...]] = {}
-    context_length_by_model: dict[str, int | None] = {}
-    final_config_by_model: dict[str, dict] = {}
-    tuning_log_by_model: dict[str, list[dict]] = {}
+    print("Querying environment (ROCm/llama.cpp/GPU versions)...", flush=True)
+    env = environment_info.gather(args.image)
+    run_id = environment_info.run_id(env)
+    print(f"  {env}", flush=True)
+    print(f"  run_id: {run_id}", flush=True)
 
     for model in models:
-        print(f"== {model.name} ==", flush=True)
+        slug = model_slug(model)
+        model_results_dir = args.results_root / slug / run_id
+        if model_results_dir.exists() and any(model_results_dir.iterdir()):
+            if not args.force:
+                sys.exit(
+                    f"Refusing to overwrite existing run directory: {model_results_dir}\n"
+                    f"(same model + ROCm + llama.cpp version already benchmarked here; "
+                    f"pass --force to overwrite)"
+                )
+            for child in model_results_dir.rglob("*"):
+                if child.is_file():
+                    child.unlink()
+        model_results_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n== {model.name} -> {model_results_dir} ==", flush=True)
 
         depths, max_ctx = derive_depths_for_model(model)
         if args.max_depth is not None:
             depths = tuple(d for d in depths if d <= args.max_depth) or (0,)
-        depths_by_model[model_key(str(model))] = depths
-        context_length_by_model[model_key(str(model))] = max_ctx
         if max_ctx is not None:
             print(f"  model context_length: {max_ctx}", flush=True)
             print(f"  derived depths (common context sizes up to {max_ctx}): {list(depths)}", flush=True)
@@ -497,12 +519,18 @@ def main() -> None:
             print(f"  WARNING: could not read context_length from GGUF metadata; "
                   f"falling back to fixed legacy depths: {list(depths)}", flush=True)
 
+        try:
+            gguf_metadata = read_gguf_metadata(model)
+        except (OSError, ValueError):
+            gguf_metadata = {}
+
+        results: list[RunResult] = []
         tuning_log: list[dict] = []
 
         if args.full_sweep:
             config = auto_tune(
                 image=args.image, gpu_gids=gpu_gids, model=model, device=args.device,
-                depths=depths, results_dir=args.results_dir, cooldown=args.cooldown,
+                depths=depths, results_dir=model_results_dir, cooldown=args.cooldown,
                 log=tuning_log,
             )
             print(f"  full-sweep winner: {config.tag()}", flush=True)
@@ -514,12 +542,12 @@ def main() -> None:
                 result = run_one(
                     image=args.image, gpu_gids=gpu_gids, host_model_path=model,
                     series="prefill", config=cfg, device=args.device,
-                    depths=depths, results_dir=args.results_dir,
+                    depths=depths, results_dir=model_results_dir,
                 )
                 results.append(result)
                 print(f"    {result.status} (rc={result.return_code})", flush=True)
                 time.sleep(args.cooldown)
-            chosen_ubatch = pick_best_ubatch(args.results_dir, str(model), list(UBATCH_CANDIDATES))
+            chosen_ubatch = pick_best_ubatch(model_results_dir, str(model), list(UBATCH_CANDIDATES))
             config = BenchConfig(ubatch=chosen_ubatch)
             print(f"  calibration winner: ub={chosen_ubatch}", flush=True)
         else:
@@ -532,55 +560,81 @@ def main() -> None:
             ).validate()
             print(f"  using fixed config: {config.tag()}", flush=True)
 
-        final_config_by_model[model_key(str(model))] = asdict(config)
-        tuning_log_by_model[model_key(str(model))] = tuning_log
-
         for series in ("prefill", "generation"):
             print(f"  [{series} {config.tag()}]", flush=True)
             result = run_one(
                 image=args.image, gpu_gids=gpu_gids, host_model_path=model,
                 series=series, config=config, device=args.device,
-                depths=depths, results_dir=args.results_dir,
+                depths=depths, results_dir=model_results_dir,
             )
             results.append(result)
             print(f"    {result.status} (rc={result.return_code})", flush=True)
             time.sleep(args.cooldown)
 
-    summary_path = args.results_dir / "curve_summary.csv"
-    rows = write_curve_summary(results, summary_path)
-    failed = [r for r in results if r.status == "failed"]
+        summary_path = model_results_dir / "curve_summary.csv"
+        rows = write_curve_summary(results, summary_path)
+        failed = [r for r in results if r.status == "failed"]
+        mode = "full-sweep" if args.full_sweep else ("calibrate-legacy" if args.calibrate else "fixed")
 
-    manifest = {
-        "image": args.image,
-        "device": args.device,
-        "depths_by_model": {k: list(v) for k, v in depths_by_model.items()},
-        "context_length_by_model": context_length_by_model,
-        "final_config_by_model": final_config_by_model,
-        "tuning_log_by_model": tuning_log_by_model,
-        "repetitions": REPETITIONS,
-        "prefill_tokens": PREFILL_TOKENS,
-        "generation_tokens": GENERATION_TOKENS,
-        "mode": "full-sweep" if args.full_sweep else ("calibrate-legacy" if args.calibrate else "fixed"),
-        "summary_rows": rows,
-        "runs": [
-            {
-                "model": model_key(r.model), "series": r.series, "config": asdict(r.config),
-                "status": r.status, "return_code": r.return_code,
-            }
-            for r in results
-        ],
-    }
-    (args.results_dir / "campaign_manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+        manifest = {
+            "image": args.image,
+            "device": args.device,
+            "depths": list(depths),
+            "context_length": max_ctx,
+            "final_config": asdict(config),
+            "tuning_log": tuning_log,
+            "repetitions": REPETITIONS,
+            "prefill_tokens": PREFILL_TOKENS,
+            "generation_tokens": GENERATION_TOKENS,
+            "mode": mode,
+            "summary_rows": rows,
+            "runs": [
+                {"series": r.series, "config": asdict(r.config), "status": r.status, "return_code": r.return_code}
+                for r in results
+            ],
+        }
+        (model_results_dir / "campaign_manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
-    marker = "campaign.failed" if failed else "campaign.finished"
-    (args.results_dir / marker).touch()
+        best_depth0_ts = None
+        gen_rows = [r for r in results if r.series == "generation"]
+        if gen_rows:
+            ts = mean_ts(gen_rows[0].jsonl_path)
+            best_depth0_ts = ts if ts >= 0 else None
 
-    print(f"\nCurve summary: {summary_path} ({rows} rows)", flush=True)
-    if failed:
-        for r in failed:
-            print(f"FAILED: {r.model} {r.series} {r.config.tag()} (see {r.stderr_path})", flush=True)
+        metadata = {
+            "model_slug": slug,
+            "model_filename": model.name,
+            "model_architecture": gguf_metadata.get("general.architecture"),
+            "model_name": gguf_metadata.get("general.name"),
+            "model_context_length": max_ctx,
+            "run_id": run_id,
+            "mode": mode,
+            "environment": env,
+            "final_config": asdict(config),
+            "depths_tested": list(depths),
+            "generation_tok_s_mean": best_depth0_ts,
+            "status": "failed" if failed else "finished",
+        }
+        (model_results_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        marker = "campaign.failed" if failed else "campaign.finished"
+        (model_results_dir / marker).touch()
+
+        print(f"  Curve summary: {summary_path} ({rows} rows)", flush=True)
+        if failed:
+            for r in failed:
+                print(f"  FAILED: {r.model} {r.series} {r.config.tag()} (see {r.stderr_path})", flush=True)
+
+    any_failed = False
+    for model in models:
+        slug = model_slug(model)
+        if (args.results_root / slug / run_id / "campaign.failed").exists():
+            any_failed = True
+    if any_failed:
         sys.exit(1)
 
 
