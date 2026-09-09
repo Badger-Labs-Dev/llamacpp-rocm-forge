@@ -7,6 +7,7 @@ import { VersionChart } from "./adapters/inbound/react/VersionChart";
 import { SensitivityChart } from "./adapters/inbound/react/SensitivityChart";
 import { RecommendationCard } from "./adapters/inbound/react/RecommendationCard";
 import { MoeOffloadChart } from "./adapters/inbound/react/MoeOffloadChart";
+import { DenseOffloadChart } from "./adapters/inbound/react/DenseOffloadChart";
 
 function App() {
   const [data, setData] = useState<ResultsFile | null>(null);
@@ -159,6 +160,18 @@ function App() {
                 throughput drops as more experts get offloaded.
               </p>
               <MoeOffloadChart curve={selectedRun.moe_offload_curve} />
+            </section>
+          )}
+
+          {selectedRun?.dense_offload_curve && (
+            <section className="card">
+              <h2>Dense layer offload (--ngl)</h2>
+              <p className="section-note">
+                For <strong>{selectedRun.run_id}</strong>: the maximum GPU-resident
+                layer count that fits at each context depth, plus throughput
+                samples below that boundary to expose the CPU-offload performance cliff.
+              </p>
+              <DenseOffloadChart curve={selectedRun.dense_offload_curve} />
             </section>
           )}
         </>

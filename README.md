@@ -18,7 +18,7 @@ Every command below uses `uv run`; activating `.venv` manually is unnecessary.
 
 ### 2. Run a model
 
-Model type (dense vs MoE) is auto-detected. By default, the driver runs the full staged auto-tune (KV-cache dtype, then the ubatch/batch pair) and, for a detected MoE model, the exact `--n-cpu-moe` boundary bisection, then benchmarks the winning configuration across the model's supported context depths:
+Model type (dense vs MoE) is auto-detected. By default, the driver runs the full staged auto-tune (KV-cache dtype, then the ubatch/batch pair), maps the per-depth offload boundary (`--ngl` for dense models or `--n-cpu-moe` for MoE), then benchmarks one fixed winning configuration across the model's supported context depths:
 
 ```bash
 uv run benchmark/run_bench.py \
@@ -27,7 +27,7 @@ uv run benchmark/run_bench.py \
 
 `--model` accepts a normal GGUF path, the `hf://...` URI from Hugging Face's download button, an Ollama-style `org/repo:QUANT` reference, or a bare `org/repo` that opens an interactive GGUF picker. Details: [Hugging Face model references](docs/huggingface-models.md).
 
-Add `--quick` for a fast pass: fixed config (no auto-tuning), and for MoE, five evenly-spaced `--n-cpu-moe` candidates instead of the exact boundary search:
+Add `--quick` for a fast pass: fixed config (no auto-tuning), an exact dense `--ngl` boundary with fewer throughput samples, and for MoE, five evenly-spaced `--n-cpu-moe` candidates instead of the exact boundary search:
 
 ```bash
 uv run benchmark/run_bench.py \
@@ -42,6 +42,10 @@ Use `--max-depth N` to cap a long-context model for a smoke test. Repeat `--mode
 A name such as `35B-A3B` means about 3B parameters are active per token; it does not mean the model occupies 3B parameters' worth of VRAM. For a detected mixture-of-experts GGUF, the driver automatically also sweeps `--n-cpu-moe` - the exact boundary bisection by default, or the quick 5-point curve with `--quick`.
 
 See [MoE expert offload](docs/moe-offload.md) for the memory model, quick-versus-thorough trade-off, and how to read the results.
+
+## Dense models
+
+For each context depth, the driver first tries full GPU-layer offload. If that real probe fails, it binary-searches `--ngl` for the maximum fitting value. When any depth needs CPU offload, it also samples lower `--ngl` values to measure the nonlinear throughput cost. The ordinary prefill/generation depth curve then holds one `--ngl` fixed: the value safe at the deepest requested context.
 
 ## Results and viewer
 

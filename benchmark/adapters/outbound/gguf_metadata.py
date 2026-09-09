@@ -13,6 +13,7 @@ MoE model's --n-cpu-moe sweep).
 
 from __future__ import annotations
 
+import re
 import struct
 from pathlib import Path
 
@@ -80,6 +81,35 @@ def context_length(metadata: dict) -> int | None:
         if key.endswith(".context_length") and isinstance(value, int):
             return value
     return None
+
+
+def model_block_count(metadata: dict) -> int | None:
+    """Return the transformer block count from namespaced GGUF metadata."""
+    for key, value in metadata.items():
+        if key.endswith(".block_count") and isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def total_model_size_bytes(path: Path) -> int:
+    """Return the complete GGUF size, summing all shards when applicable."""
+    match = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", path.name, re.IGNORECASE)
+    if match is None:
+        return path.stat().st_size
+
+    prefix = path.name[:match.start()]
+    shard_count = int(match.group(2))
+    shards = [
+        path.with_name(f"{prefix}-{index:05d}-of-{shard_count:05d}.gguf")
+        for index in range(1, shard_count + 1)
+    ]
+    missing = [shard for shard in shards if not shard.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"incomplete split GGUF: missing {len(missing)} of {shard_count} shards; "
+            f"first missing: {missing[0]}"
+        )
+    return sum(shard.stat().st_size for shard in shards)
 
 
 def moe_params(metadata: dict) -> dict | None:

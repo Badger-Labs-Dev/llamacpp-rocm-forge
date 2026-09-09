@@ -25,7 +25,7 @@ python3 docker/gguf-vram-estimator.py \
 
 ## What it calculates
 
-The script reads the architecture, transformer block count, KV head count, key/value dimensions, trained context length, and sliding-window metadata. It adds:
+The script reads the architecture, transformer block count, KV head count, key/value dimensions, and trained context length. It conservatively budgets the full requested context for every layer, including sliding-window/hybrid models. It adds:
 
 1. the on-disk GGUF size, including all shards when applicable;
 2. the calculated KV cache for each requested context; and
@@ -35,6 +35,6 @@ If a requested context exceeds the GGUF's trained context length, the script omi
 
 ## Relationship to the benchmark
 
-Use this estimator to narrow the context range. Use `benchmark/run_bench.py` for the actual answer on this GPU: it measures throughput, runs depths in ascending order, and records a partial curve when a deep context fails or times out. See [benchmarking strategy and recovery](benchmarking.md).
+The benchmark uses the same pure estimate before dense probes, but never treats it as proof. `benchmark/run_bench.py` performs a real full-offload probe and binary-searches `--ngl` after a failure. See [benchmarking strategy and recovery](benchmarking.md).
 
 For MoE models, the estimator remains a broad memory estimate. `--n-cpu-moe` changes where expert weights reside, so use the dedicated [MoE offload sweep](moe-offload.md) to find the real context-versus-offload boundary.

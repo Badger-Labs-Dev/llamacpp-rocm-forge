@@ -4,7 +4,7 @@ binary search (thorough mode).
 
 Extracted from run_bench.py's probe_moe_offload()/sweep_moe_offload_quick()/
 sweep_moe_offload_thorough(). The thorough-mode boundary search itself is
-pure domain logic living in domain.moe_bisection.resolve_boundary(); this
+pure domain logic living in domain.offload_bisection.resolve_boundary(); this
 module drives that generator and performs the actual probe I/O via
 application.run_curve.run_one().
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 from adapters.outbound.campaign_store import mean_ts
 from application.run_curve import ProgressTracker, run_one
 from domain.models import BenchConfig
-from domain.moe_bisection import extra_throughput_samples, resolve_boundary
+from domain.offload_bisection import extra_throughput_samples, resolve_boundary
 from domain.planning import quick_moe_candidates, thorough_max_probes_per_depth
 
 MOE_QUICK_CANDIDATE_COUNT = 5  # evenly spaced --n-cpu-moe candidates for quick mode
@@ -167,7 +167,7 @@ def sweep_moe_offload_thorough(
 
         # Drive the pure boundary-search generator: it decides which
         # n_cpu_moe to try next, this loop performs the actual probe I/O.
-        search = resolve_boundary(known_fail_floor=known_fail_floor, block_count=block_count)
+        search = resolve_boundary(known_fail_floor=known_fail_floor, max_offload=block_count)
         try:
             ncmoe = next(search)
             while True:
@@ -197,7 +197,7 @@ def sweep_moe_offload_thorough(
         # spread across the range above it.
         if boundary < block_count and MOE_EXTRA_SAMPLE_COUNT > 0:
             for ncmoe in extra_throughput_samples(
-                boundary=boundary, block_count=block_count, sample_count=MOE_EXTRA_SAMPLE_COUNT,
+                boundary=boundary, max_offload=block_count, sample_count=MOE_EXTRA_SAMPLE_COUNT,
             ):
                 probe(ncmoe)
 

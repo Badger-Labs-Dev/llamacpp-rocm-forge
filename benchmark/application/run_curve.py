@@ -27,7 +27,6 @@ from adapters.outbound.terminal_progress import TerminalProgressReporter as Prog
 from domain.models import BenchConfig, RunResult
 
 REPETITIONS = 3
-GPU_LAYERS = 99
 PREFILL_TOKENS = 2048
 GENERATION_TOKENS = 128
 DEPTH_TIMEOUT_SECONDS = 300  # per-depth llama-bench invocation; OOM can hang
@@ -53,7 +52,7 @@ def probe_for(*, model_container_path: str, series: str, config: BenchConfig, de
         device=device,
         depth=depth,
         repetitions=REPETITIONS,
-        gpu_layers=GPU_LAYERS,
+        gpu_layers=config.gpu_layers,
         prefill_tokens=PREFILL_TOKENS,
         generation_tokens=GENERATION_TOKENS,
     )

@@ -7,11 +7,13 @@ Every benchmark writes under `results/<model-slug>/<run-id>/`. The model slug co
 | File or directory | Purpose |
 | --- | --- |
 | `metadata.json` | Compact model, environment, final configuration, and completion summary for aggregation. |
-| `campaign_manifest.json` | Full configuration, tuning log, per-series status, stopped/skipped depths, and `moe_offload_curve` where applicable. |
+| `campaign_manifest.json` | Full configuration, tuning log, per-series status, stopped/skipped depths, and dense/MoE offload curves where applicable. |
 | `curve_summary.csv` | Prefill and generation throughput for the ordinary final depth curve. |
 | `*.jsonl` / `*.stderr.log` | Raw llama-bench output and diagnostics. |
 | `tuning/` | Full-sweep KV and ubatch/batch probes. |
 | `moe-tuning/` | MoE offload probes. |
+| `dense-preflight/` | Default-mode deepest-depth probes used to select a safe `--ngl` for auto-tuning. |
+| `dense-tuning/` | Per-depth dense `--ngl` boundary and throughput probes. |
 
 The driver refuses to overwrite a directory with the same model and version identity. Pass `--force` only when replacing that run is intentional.
 
@@ -48,6 +50,7 @@ npm run build
 2. **Parameter sensitivity** turns a full sweep's staged `tuning_log` into a tornado chart. It reports the variation observed along the coordinate-descent path, not a fully independent parameter grid.
 3. **Recommended settings** shows the ordinary final configuration with the sensitivity notes that explain which choices moved performance enough to care about.
 4. **MoE expert offload** appears only when `moe_offload_curve` exists. It plots throughput by context depth for each sampled `-ncmoe` value and lists the smallest recorded value that fits at each depth.
+5. **Dense layer offload** appears only when `dense_offload_curve` exists. It plots prefill throughput against `--ngl` for each context depth and lists the exact maximum fitting value.
 
 `--quick` runs still supply version-over-time data, but do not have enough alternatives to produce a sensitivity chart.
 

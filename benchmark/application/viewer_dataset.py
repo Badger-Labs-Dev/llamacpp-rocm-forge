@@ -64,6 +64,44 @@ def _check_moe_offload_curve(curve: Any, where: str) -> None:
             _fail(f"{where} moe_offload_curve by_depth entry 'results' must be a list")
 
 
+def _check_dense_offload_curve(curve: Any, where: str) -> None:
+    if curve is None:
+        return
+    if not isinstance(curve, dict):
+        _fail(f"{where} dense_offload_curve must be an object or null")
+    if curve.get("mode") not in ("quick", "thorough"):
+        _fail(f"{where} dense_offload_curve 'mode' must be 'quick' or 'thorough'")
+    for key in ("block_count", "max_gpu_layers"):
+        if not isinstance(curve.get(key), int):
+            _fail(f"{where} dense_offload_curve missing/invalid {key!r}")
+    if curve.get("final_ngl") is not None and not isinstance(curve.get("final_ngl"), int):
+        _fail(f"{where} dense_offload_curve 'final_ngl' must be integer or null")
+    by_depth = curve.get("by_depth")
+    if not isinstance(by_depth, list):
+        _fail(f"{where} dense_offload_curve 'by_depth' must be a list")
+    for depth in by_depth:
+        if not isinstance(depth, dict) or not isinstance(depth.get("depth"), int):
+            _fail(f"{where} dense_offload_curve by_depth entry missing/invalid 'depth'")
+        boundary = depth.get("max_ngl_that_fits")
+        if boundary is not None and not isinstance(boundary, int):
+            _fail(f"{where} dense_offload_curve 'max_ngl_that_fits' must be integer or null")
+        results = depth.get("results")
+        if not isinstance(results, list):
+            _fail(f"{where} dense_offload_curve by_depth entry 'results' must be a list")
+        for point in results:
+            if not isinstance(point, dict):
+                _fail(f"{where} dense_offload_curve result must be an object")
+            if not isinstance(point.get("n_gpu_layers"), int):
+                _fail(f"{where} dense_offload_curve result missing/invalid 'n_gpu_layers'")
+            if not isinstance(point.get("n_cpu_layers"), int):
+                _fail(f"{where} dense_offload_curve result missing/invalid 'n_cpu_layers'")
+            if point.get("status") not in ("ok", "failed"):
+                _fail(f"{where} dense_offload_curve result has invalid 'status'")
+            avg_ts = point.get("avg_ts")
+            if avg_ts is not None and not isinstance(avg_ts, (int, float)):
+                _fail(f"{where} dense_offload_curve result 'avg_ts' must be number or null")
+
+
 def validate_viewer_dataset(dataset: dict) -> None:
     """Validate the published viewer dataset against the stable contract.
 
@@ -124,3 +162,4 @@ def validate_viewer_dataset(dataset: dict) -> None:
             for stage in tuning_log:
                 _check_tuning_stage(stage, where)
             _check_moe_offload_curve(run["moe_offload_curve"], where)
+            _check_dense_offload_curve(run.get("dense_offload_curve"), where)

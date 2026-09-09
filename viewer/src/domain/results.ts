@@ -20,6 +20,9 @@ export interface FinalConfig {
   ctk: string;
   ctv: string;
   flash_attn: string;
+  gpu_layers?: number;
+  block_count?: number | null;
+  n_cpu_layers?: number;
   n_cpu_moe: number;
 }
 
@@ -42,6 +45,27 @@ export interface MoeOffloadCurve {
   expert_used_count: number | null;
   block_count: number;
   by_depth: MoeOffloadDepth[];
+}
+
+export interface DenseOffloadPoint {
+  n_cpu_layers: number;
+  n_gpu_layers: number;
+  status: "ok" | "failed";
+  avg_ts: number | null;
+}
+
+export interface DenseOffloadDepth {
+  depth: number;
+  max_ngl_that_fits: number | null;
+  results: DenseOffloadPoint[];
+}
+
+export interface DenseOffloadCurve {
+  mode: "quick" | "thorough";
+  block_count: number;
+  max_gpu_layers: number;
+  final_ngl: number | null;
+  by_depth: DenseOffloadDepth[];
 }
 
 export interface Environment {
@@ -67,6 +91,7 @@ export interface RunEntry {
   curve: CurveRow[];
   tuning_log: TuningStage[];
   moe_offload_curve: MoeOffloadCurve | null;
+  dense_offload_curve?: DenseOffloadCurve | null;
 }
 
 export interface ModelEntry {

@@ -93,6 +93,7 @@ def build_run_entry(model_dir: Path, run_dir: Path) -> dict | None:
         "curve": curve,
         "tuning_log": manifest.get("tuning_log", []),
         "moe_offload_curve": manifest.get("moe_offload_curve"),
+        "dense_offload_curve": manifest.get("dense_offload_curve"),
     }
 
 

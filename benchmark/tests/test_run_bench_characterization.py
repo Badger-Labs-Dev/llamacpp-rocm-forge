@@ -178,7 +178,7 @@ class MainCharacterizationTests(unittest.TestCase):
             argv = [
                 "run_bench.py", "--model", str(model_path),
                 "--results-root", str(results_root), "--gpu-gid", "999",
-                "--cooldown", "0", "--quick",
+                "--cooldown", "0", "--max-depth", "0", "--quick",
             ]
 
             def fake_run(cmd, stdout=None, stderr=None, timeout=None, capture_output=None):
@@ -192,9 +192,15 @@ class MainCharacterizationTests(unittest.TestCase):
                  mock.patch.object(run_campaign_module.time, "sleep"), \
                  mock.patch.object(
                      run_bench.environment_info, "gather",
-                     return_value={"rocm_version": "7.2.4.1-1", "build_number": 9999},
+                     return_value={
+                         "rocm_version": "7.2.4.1-1", "build_number": 9999,
+                         "gpu_vram_bytes": 32 * 1024**3,
+                     },
                  ), \
-                 mock.patch.object(run_bench, "read_gguf_metadata", return_value={}), \
+                 mock.patch.object(
+                     run_bench, "read_gguf_metadata",
+                     return_value={"general.architecture": "test", "test.block_count": 1},
+                 ), \
                  mock.patch.object(run_bench, "moe_params", return_value=None):
                 run_bench.main()  # must NOT raise SystemExit for a fully-ok run
 
@@ -216,17 +222,59 @@ class MainCharacterizationTests(unittest.TestCase):
                 },
             )
             self.assertEqual(manifest["mode"], "quick")
+            self.assertEqual(manifest["final_config"]["gpu_layers"], 2)
+            self.assertIsNone(manifest["dense_offload_curve"])
             self.assertEqual(len(manifest["runs"]), 2)  # prefill + generation
             self.assertEqual(
                 set(manifest.keys()),
                 {
                     "image", "device", "depths", "context_length", "final_config",
-                    "tuning_log", "moe_offload_curve", "repetitions", "prefill_tokens",
+                    "tuning_log", "moe_offload_curve", "dense_offload_curve",
+                    "repetitions", "prefill_tokens",
                     "generation_tokens", "mode", "completed_at", "summary_rows", "runs",
                 },
             )
             self.assertTrue((run_dir / "campaign.finished").exists())
             self.assertTrue((run_dir / "curve_summary.csv").is_file())
+
+    def test_infeasible_dense_campaign_is_failed_and_skips_final_curves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "model.gguf"
+            model.write_bytes(b"x")
+            (root / "results" / "model" / "test-run").mkdir(parents=True)
+            run_one_mock = mock.Mock(side_effect=AssertionError("final curve must be skipped"))
+            progress_mock = mock.Mock()
+            outcome = run_campaign_module.run_model_campaign(
+                image="unused", gpu_gids=[], device="ROCm0", model=model,
+                results_root=root / "results", run_id="test-run", env={},
+                config=run_campaign_module.CampaignConfig(quick=True, cooldown=0),
+                gguf_metadata={"general.architecture": "test", "test.block_count": 1},
+                moe=None, dense_block_count=1, model_size_bytes=1,
+                depths=(0, 2048), max_ctx=4096, progress=progress_mock,
+                bench_config_cls=BenchConfig, run_one=run_one_mock,
+                auto_tune=mock.Mock(), sweep_moe_offload_quick=mock.Mock(),
+                sweep_moe_offload_thorough=mock.Mock(),
+                preflight_dense_offload=mock.Mock(),
+                sweep_dense_offload=mock.Mock(return_value={
+                    "mode": "quick", "block_count": 1, "max_gpu_layers": 2,
+                    "final_ngl": None, "offload_needed": True, "by_depth": [],
+                }),
+                model_slug="model", prefill_tokens=2048,
+                generation_tokens=128, repetitions=3,
+            )
+
+            self.assertTrue(outcome.failed)
+            self.assertEqual(outcome.summary_rows, 0)
+            run_one_mock.assert_not_called()
+            progress_mock.prune.assert_called_once_with(
+                4, "final curves skipped because no dense --ngl fits",
+            )
+            run_dir = root / "results" / "model" / "test-run"
+            self.assertTrue((run_dir / "campaign.failed").exists())
+            metadata = json.loads((run_dir / "metadata.json").read_text())
+            self.assertEqual(metadata["status"], "failed")
+            self.assertEqual(metadata["final_config"]["gpu_layers"], 0)
 
 
 class SweepMoeOffloadThoroughCharacterizationTests(unittest.TestCase):

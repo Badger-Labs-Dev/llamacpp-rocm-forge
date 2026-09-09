@@ -14,12 +14,14 @@ Model type (dense vs MoE) is auto-detected from GGUF *.expert_count -
 there is nothing to configure. Two modes, no in-between:
 
   (default)  Staged auto-tune across ubatch, batch, and KV cache dtype
-             (application/auto_tune.py). For a detected MoE model, also
+             (application/auto_tune.py). Dense models map the exact --ngl
+             boundary per depth; detected MoE models also
              binary-searches the exact --n-cpu-moe boundary per depth
              (application/moe_sweep.py's thorough sweep). This is the
              slow, thorough, "give me the real numbers" mode.
   --quick    Skips tuning: fixed ubatch=2048, batch=2048, ctk/ctv=f16,
-             flash-attn=auto. For a detected MoE model, sweeps five
+             flash-attn=auto. Dense models still map --ngl with fewer
+             throughput samples. A detected MoE model sweeps five
              evenly-spaced --n-cpu-moe candidates instead of the exact
              boundary search. Fast path for "does this run at all,
              roughly how fast".
@@ -45,7 +47,12 @@ from pathlib import Path
 from adapters.outbound import huggingface_models as hf_models
 from adapters.outbound import rocm_environment as environment_info
 from adapters.outbound.docker_runner import kill_active_containers
-from adapters.outbound.gguf_metadata import moe_params, read_gguf_metadata
+from adapters.outbound.gguf_metadata import (
+    model_block_count,
+    moe_params,
+    read_gguf_metadata,
+    total_model_size_bytes,
+)
 from adapters.outbound.model_resolution import (
     derive_depths_for_model,
     model_slug,
@@ -56,6 +63,11 @@ from application.auto_tune import (
     auto_tune,
     probe_depths,
     valid_batch_grid_count,
+)
+from application.dense_sweep import (
+    DENSE_QUICK_EXTRA_SAMPLE_COUNT,
+    preflight_dense_offload,
+    sweep_dense_offload,
 )
 from application.moe_sweep import (
     MOE_EXTRA_SAMPLE_COUNT,
@@ -98,7 +110,12 @@ def _install_cleanup_handlers() -> None:
         signal.signal(sig, _handle_signal)
 
 
-def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: dict | None) -> tuple[int, str]:
+def planned_probe_count(
+    args: argparse.Namespace,
+    depths: tuple[int, ...],
+    moe: dict | None,
+    dense_block_count: int | None = None,
+) -> tuple[int, str]:
     """CLI adapter around the domain campaign-budget calculation."""
     budget = campaign_budget(
         depth_count=len(depths),
@@ -109,6 +126,8 @@ def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: 
         moe_block_count=(moe or {}).get("block_count"),
         quick_candidate_count=MOE_QUICK_CANDIDATE_COUNT,
         thorough_extra_sample_count=MOE_EXTRA_SAMPLE_COUNT,
+        dense_block_count=dense_block_count,
+        dense_quick_extra_sample_count=DENSE_QUICK_EXTRA_SAMPLE_COUNT,
     )
     return budget.total, budget.detail
 
@@ -220,10 +239,20 @@ def main() -> None:
         except (OSError, ValueError):
             gguf_metadata = {}
         moe = moe_params(gguf_metadata)
+        block_count = model_block_count(gguf_metadata)
+        dense_block_count = block_count if moe is None else None
         if moe is not None:
             print(f"  MoE model detected: expert_count={moe['expert_count']} "
                   f"expert_used_count={moe['expert_used_count']}", flush=True)
-        max_probes, progress_detail = planned_probe_count(args, depths, moe)
+        elif dense_block_count is None:
+            print(
+                "  WARNING: dense model has no readable *.block_count; "
+                "falling back to llama.cpp's full-offload request without --ngl discovery",
+                flush=True,
+            )
+        max_probes, progress_detail = planned_probe_count(
+            args, depths, moe, dense_block_count,
+        )
         progress = ProgressTracker(
             ProbeProgress(total_probes=max_probes, expected_gap_seconds=DEPTH_COOLDOWN_SECONDS),
         )
@@ -236,11 +265,16 @@ def main() -> None:
                 quick=args.quick, max_depth=args.max_depth,
                 cooldown=args.cooldown, force=args.force,
             ),
-            gguf_metadata=gguf_metadata, moe=moe, depths=depths, max_ctx=max_ctx,
+            gguf_metadata=gguf_metadata, moe=moe,
+            dense_block_count=dense_block_count,
+            model_size_bytes=total_model_size_bytes(model),
+            depths=depths, max_ctx=max_ctx,
             progress=progress,
             bench_config_cls=BenchConfig, run_one=run_one, auto_tune=auto_tune,
             sweep_moe_offload_quick=sweep_moe_offload_quick,
             sweep_moe_offload_thorough=sweep_moe_offload_thorough,
+            preflight_dense_offload=preflight_dense_offload,
+            sweep_dense_offload=sweep_dense_offload,
             model_slug=slug,
             prefill_tokens=PREFILL_TOKENS, generation_tokens=GENERATION_TOKENS,
             repetitions=REPETITIONS,

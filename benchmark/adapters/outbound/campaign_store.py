@@ -40,7 +40,7 @@ def mean_ts(jsonl_path: Path) -> float:
 
 def write_curve_summary(results: list, summary_path: Path) -> int:
     fieldnames = [
-        "model", "series", "ubatch", "batch", "ctk", "ctv", "flash_attn", "n_cpu_moe",
+        "model", "series", "ubatch", "batch", "ctk", "ctv", "flash_attn", "n_gpu_layers", "n_cpu_moe",
         "n_depth", "n_prompt", "n_gen", "avg_ts", "avg_ns", "status",
     ]
     row_count = 0
@@ -68,6 +68,7 @@ def write_curve_summary(results: list, summary_path: Path) -> int:
                     "ctk": result.config.ctk,
                     "ctv": result.config.ctv,
                     "flash_attn": result.config.flash_attn,
+                    "n_gpu_layers": result.config.gpu_layers,
                     "n_cpu_moe": result.config.n_cpu_moe,
                     "n_depth": row.get("n_depth"),
                     "n_prompt": row.get("n_prompt"),
@@ -89,6 +90,7 @@ def build_campaign_manifest(
     final_config: dict,
     tuning_log: list[dict],
     moe_offload_curve: dict | None,
+    dense_offload_curve: dict | None,
     repetitions: int,
     prefill_tokens: int,
     generation_tokens: int,
@@ -112,6 +114,7 @@ def build_campaign_manifest(
         "final_config": final_config,
         "tuning_log": tuning_log,
         "moe_offload_curve": moe_offload_curve,
+        "dense_offload_curve": dense_offload_curve,
         "repetitions": repetitions,
         "prefill_tokens": prefill_tokens,
         "generation_tokens": generation_tokens,

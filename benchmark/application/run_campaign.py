@@ -21,7 +21,7 @@ adapter-shaped and can be given a protocol at that point.
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,6 +61,12 @@ class CampaignOutcome:
     partial: bool
 
 
+def _config_payload(config) -> dict:
+    payload = asdict(config)
+    payload["gpu_layers"] = config.gpu_layers
+    return payload
+
+
 def run_model_campaign(
     *,
     image: str,
@@ -73,6 +79,8 @@ def run_model_campaign(
     config: CampaignConfig,
     gguf_metadata: dict,
     moe: dict | None,
+    dense_block_count: int | None,
+    model_size_bytes: int,
     depths: tuple[int, ...],
     max_ctx: int | None,
     progress,
@@ -84,6 +92,8 @@ def run_model_campaign(
     auto_tune,
     sweep_moe_offload_quick,
     sweep_moe_offload_thorough,
+    preflight_dense_offload,
+    sweep_dense_offload,
     model_slug: str,
     prefill_tokens: int,
     generation_tokens: int,
@@ -101,6 +111,8 @@ def run_model_campaign(
     results: list = []
     tuning_log: list[dict] = []
 
+    dense_offload_result = None
+    dense_capacity_failed = False
     if config.quick:
         bench_config = bench_config_cls(
             ubatch=2048, batch=2048, ctk="f16", ctv="f16", flash_attn="auto",
@@ -108,13 +120,47 @@ def run_model_campaign(
         print(f"  --quick: using fixed config {bench_config.tag()}", flush=True)
     else:
         tuning_ncmoe = (moe or {}).get("block_count") or 0
+        tuning_ngl = 99
         if tuning_ncmoe:
             print(f"  MoE model: auto-tuning with --n-cpu-moe={tuning_ncmoe} "
                   "so KV/ubatch/batch probes do not OOM before the MoE curve runs", flush=True)
+        elif dense_block_count:
+            print(
+                "  Dense model: resolving a deepest-depth-safe --ngl before auto-tuning",
+                flush=True,
+            )
+            preflight_ngl = preflight_dense_offload(
+                image=image,
+                gpu_gids=gpu_gids,
+                model=model,
+                base_config=bench_config_cls().validate(),
+                device=device,
+                depth=depths[-1],
+                block_count=dense_block_count,
+                results_dir=model_results_dir,
+                cooldown=config.cooldown,
+                metadata=gguf_metadata,
+                model_size_bytes=model_size_bytes,
+                gpu_vram_bytes=env.get("gpu_vram_bytes") or 0,
+                progress=progress,
+            )
+            if preflight_ngl is None:
+                tuning_ngl = 0
+                print(
+                    "  dense preflight: f16 did not fit even at --ngl=0; "
+                    "auto-tuning at --ngl=0 to test smaller KV caches",
+                    flush=True,
+                )
+            else:
+                tuning_ngl = preflight_ngl
+                print(f"  dense preflight: auto-tuning with --ngl={tuning_ngl}", flush=True)
         bench_config = auto_tune(
             image=image, gpu_gids=gpu_gids, model=model, device=device,
             depths=depths, results_dir=model_results_dir, cooldown=config.cooldown,
-            log=tuning_log, n_cpu_moe=tuning_ncmoe, progress=progress,
+            log=tuning_log, n_cpu_moe=tuning_ncmoe,
+            block_count=dense_block_count,
+            n_cpu_layers=((dense_block_count + 1) - tuning_ngl) if dense_block_count else 0,
+            progress=progress,
         )
         print(f"  auto-tune winner: {bench_config.tag()}", flush=True)
 
@@ -139,7 +185,65 @@ def run_model_campaign(
             moe_offload_result["expert_used_count"] = moe["expert_used_count"]
             moe_offload_result["block_count"] = block_count
 
-    for series in ("prefill", "generation"):
+    if moe is None and dense_block_count:
+        print(
+            f"  Dense model detected: block_count={dense_block_count}; "
+            "discovering maximum --ngl and throughput at each depth",
+            flush=True,
+        )
+        dense_sweep_result = sweep_dense_offload(
+            image=image,
+            gpu_gids=gpu_gids,
+            model=model,
+            base_config=bench_config,
+            device=device,
+            depths=depths,
+            block_count=dense_block_count,
+            results_dir=model_results_dir,
+            cooldown=config.cooldown,
+            metadata=gguf_metadata,
+            model_size_bytes=model_size_bytes,
+            gpu_vram_bytes=env.get("gpu_vram_bytes") or 0,
+            quick=config.quick,
+            progress=progress,
+        )
+        final_ngl = dense_sweep_result["final_ngl"]
+        if dense_sweep_result["offload_needed"]:
+            dense_offload_result = {
+                key: value for key, value in dense_sweep_result.items()
+                if key != "offload_needed"
+            }
+        if final_ngl is None:
+            dense_capacity_failed = True
+            bench_config = replace(
+                bench_config,
+                block_count=dense_block_count,
+                n_cpu_layers=dense_block_count + 1,
+            ).validate()
+            if progress is not None:
+                progress.prune(
+                    2 * len(depths),
+                    "final curves skipped because no dense --ngl fits",
+                )
+            print(
+                "  FAILED: no --ngl fits at the deepest requested context; "
+                "skipping final curves",
+                flush=True,
+            )
+        else:
+            max_gpu_layers = dense_block_count + 1
+            bench_config = replace(
+                bench_config,
+                block_count=dense_block_count,
+                n_cpu_layers=max_gpu_layers - final_ngl,
+            ).validate()
+            print(
+                f"  final curves: fixed --ngl={bench_config.gpu_layers} "
+                "(safe at the deepest probed context)",
+                flush=True,
+            )
+
+    for series in (() if dense_capacity_failed else ("prefill", "generation")):
         print(f"  [{series} {bench_config.tag()}]", flush=True)
         result = run_one(
             image=image, gpu_gids=gpu_gids, host_model_path=model,
@@ -153,6 +257,7 @@ def run_model_campaign(
     summary_path = model_results_dir / "curve_summary.csv"
     rows = write_curve_summary(results, summary_path)
     failed = [r for r in results if r.status == "failed"]
+    campaign_failed = bool(failed) or dense_capacity_failed
     partial = [r for r in results if r.status == "partial"]
     mode = "quick" if config.quick else "full-sweep"
     completed_at = datetime.now(timezone.utc).isoformat()
@@ -162,9 +267,10 @@ def run_model_campaign(
         device=device,
         depths=depths,
         context_length=max_ctx,
-        final_config=asdict(bench_config),
+        final_config=_config_payload(bench_config),
         tuning_log=tuning_log,
         moe_offload_curve=moe_offload_result,
+        dense_offload_curve=dense_offload_result,
         repetitions=repetitions,
         prefill_tokens=prefill_tokens,
         generation_tokens=generation_tokens,
@@ -173,7 +279,7 @@ def run_model_campaign(
         summary_rows=rows,
         run_summaries=[
             {
-                "series": r.series, "config": asdict(r.config), "status": r.status,
+                "series": r.series, "config": _config_payload(r.config), "status": r.status,
                 "return_code": r.return_code, "depths_run": list(r.depths_run),
                 "depths_skipped": list(r.depths_skipped), "stop_reason": r.stop_reason,
             }
@@ -199,14 +305,14 @@ def run_model_campaign(
         run_completed_at=completed_at,
         mode=mode,
         environment=env,
-        final_config=asdict(bench_config),
+        final_config=_config_payload(bench_config),
         depths_tested=depths,
         generation_tok_s_mean=best_depth0_ts,
-        status="failed" if failed else ("partial" if partial else "finished"),
+        status="failed" if campaign_failed else ("partial" if partial else "finished"),
     )
     write_json(model_results_dir / "metadata.json", metadata)
 
-    write_status_marker(model_results_dir, failed=bool(failed), partial=bool(partial))
+    write_status_marker(model_results_dir, failed=campaign_failed, partial=bool(partial))
 
     print(f"  Curve summary: {summary_path} ({rows} rows)", flush=True)
     if failed:
@@ -219,5 +325,5 @@ def run_model_campaign(
 
     return CampaignOutcome(
         model_results_dir=model_results_dir, summary_rows=rows,
-        failed=bool(failed), partial=bool(partial),
+        failed=campaign_failed, partial=bool(partial),
     )

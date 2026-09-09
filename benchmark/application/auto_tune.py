@@ -66,6 +66,8 @@ def auto_tune(
     cooldown: int,
     log: list[dict],
     n_cpu_moe: int = 0,
+    block_count: int | None = None,
+    n_cpu_layers: int = 0,
     progress: ProgressTracker | None = None,
 ) -> BenchConfig:
     """Staged (coordinate-descent) auto-tune: KV cache dtype, then a
@@ -84,7 +86,8 @@ def auto_tune(
     print("  [stage 1/2] KV cache dtype", flush=True)
     kv_scores = {}
     for kv in KV_CACHE_TYPES:
-        cfg = BenchConfig(ctk=kv, ctv=kv, n_cpu_moe=n_cpu_moe).validate()
+        cfg = BenchConfig(ctk=kv, ctv=kv, n_cpu_moe=n_cpu_moe,
+                          block_count=block_count, n_cpu_layers=n_cpu_layers).validate()
         score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
                              device=device, depths=probe_d, results_dir=results_dir, progress=progress)
         kv_scores[kv] = score
@@ -105,7 +108,8 @@ def auto_tune(
             if ub > b:
                 continue  # llama.cpp requires ubatch <= batch
             cfg = BenchConfig(ubatch=ub, batch=b, ctk=best_kv, ctv=best_kv,
-                              n_cpu_moe=n_cpu_moe).validate()
+                              n_cpu_moe=n_cpu_moe, block_count=block_count,
+                              n_cpu_layers=n_cpu_layers).validate()
             score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
                                  device=device, depths=(0,), results_dir=results_dir, progress=progress)
             combo_key = f"ub{ub}_b{b}"
@@ -119,7 +123,8 @@ def auto_tune(
     print(f"  stage 2 winner: ubatch={best_ub} batch={best_b}", flush=True)
 
     return BenchConfig(ubatch=best_ub, batch=best_b, ctk=best_kv, ctv=best_kv,
-                       n_cpu_moe=n_cpu_moe).validate()
+                       n_cpu_moe=n_cpu_moe, block_count=block_count,
+                       n_cpu_layers=n_cpu_layers).validate()
 
 
 def valid_batch_grid_count() -> int:
