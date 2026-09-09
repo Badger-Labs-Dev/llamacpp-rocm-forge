@@ -69,9 +69,6 @@ from __future__ import annotations
 
 import argparse
 import atexit
-import csv
-import json
-import re
 import signal
 import subprocess
 import sys
@@ -81,31 +78,41 @@ from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from gguf_info import context_length, moe_params, read_gguf_metadata
+from gguf_info import moe_params, read_gguf_metadata
+from bench_app.adapters.outbound.campaign_store import (
+    build_campaign_manifest,
+    build_run_metadata,
+    load_jsonl_rows,
+    mean_ts,
+    write_curve_summary,
+    write_json,
+    write_status_marker,
+)
 from bench_app.adapters.outbound.docker_llama_bench import (
     LlamaBenchProbe,
     docker_command as build_docker_command,
     llama_bench_command,
 )
+from bench_app.adapters.outbound.model_resolution import (
+    COMMON_CONTEXT_SIZES,
+    LEGACY_FIXED_DEPTHS,
+    derive_depths_for_model as _derive_depths_for_model,
+    model_key,
+    model_slug,
+    resolve_model_reference,
+)
+from bench_app.domain.moe_bisection import (
+    extra_throughput_samples,
+    resolve_boundary,
+)
 from bench_app.domain.planning import (
     campaign_budget,
     quick_moe_candidates,
-    thorough_extra_candidates,
     thorough_max_probes_per_depth,
 )
 import environment_info
 import hf_models
 from progress_tracker import ProgressTracker
-
-# Common context-window sizes seen across model releases (powers of two, plus
-# the odd-but-common 24576/49152 seen in some Qwen configs). Depths are
-# derived from whichever of these fit under a model's trained
-# *.context_length, rather than a single fixed list applied to every model
-# regardless of what it actually supports - see gguf_info.py.
-COMMON_CONTEXT_SIZES = (
-    2048, 4096, 8192, 16384, 24576, 32768, 49152, 65536, 98304, 131072, 262144,
-)
-LEGACY_FIXED_DEPTHS = (0, 8192, 16384, 24576, 32768, 40960, 49152, 57344, 65536)
 
 UBATCH_CANDIDATES = (256, 512, 1024, 2048)
 BATCH_CANDIDATES = (512, 1024, 2048, 4096)
@@ -210,47 +217,10 @@ def _install_cleanup_handlers() -> None:
         signal.signal(sig, _handle_signal)
 
 
-def model_key(model_path: str) -> str:
-    return Path(model_path).name
-
-
-def model_slug(model_path: Path) -> str:
-    """Filesystem-safe identity for a model: its filename without the
-    .gguf extension, lowercased, non-alphanumerics collapsed to '-'."""
-    stem = model_path.stem
-    slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
-    return slug or "model"
-
-
 def derive_depths_for_model(model_path: Path) -> tuple[tuple[int, ...], int | None]:
-    """Pick depths to test for this model: common context sizes that fit
-    under its trained context_length, converted to llama-bench "-d" values.
-
-    llama-bench's -d is how much KV cache is already "full" before the timed
-    prefill/generation runs, so a context size C is tested at depth
-    C - PREFILL_TOKENS (the prefill run itself consumes PREFILL_TOKENS more).
-    Depth 0 (a cold/empty cache) is always included regardless of the
-    model's context length.
-
-    Returns (depths, model_context_length). model_context_length is None if
-    it couldn't be read from the GGUF (falls back to LEGACY_FIXED_DEPTHS).
-    """
-    try:
-        metadata = read_gguf_metadata(model_path)
-        max_ctx = context_length(metadata)
-    except (OSError, ValueError):
-        max_ctx = None
-
-    if max_ctx is None:
-        return LEGACY_FIXED_DEPTHS, None
-
-    depths = {0}
-    for ctx_size in COMMON_CONTEXT_SIZES:
-        if ctx_size > max_ctx:
-            break
-        depth = max(0, ctx_size - PREFILL_TOKENS)
-        depths.add(depth)
-    return tuple(sorted(depths)), max_ctx
+    """Compatibility wrapper around the model-resolution adapter's depth
+    derivation, pinned to this module's PREFILL_TOKENS."""
+    return _derive_depths_for_model(model_path, prefill_tokens=PREFILL_TOKENS)
 
 
 def probe_for(*, model_container_path: str, series: str, config: BenchConfig, device: str, depth: int) -> LlamaBenchProbe:
@@ -451,27 +421,6 @@ def run_one(
         depths_skipped=tuple(depths_skipped),
         stop_reason=stop_reason,
     )
-
-
-def load_jsonl_rows(path: Path) -> list[dict]:
-    if not path.is_file():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows
-
-
-def mean_ts(jsonl_path: Path) -> float:
-    rows = load_jsonl_rows(jsonl_path)
-    values = [r.get("avg_ts") for r in rows if r.get("avg_ts") is not None]
-    return sum(values) / len(values) if values else -1.0
 
 
 def probe_depths(depths: tuple[int, ...]) -> tuple[int, ...]:
@@ -749,48 +698,40 @@ def sweep_moe_offload_thorough(
             time.sleep(cooldown)
             return fits
 
-        # Fast path: does the previous depth's boundary still fit? If so
-        # it's still optimal (monotonicity (2) rules out anything smaller
-        # working now, and it demonstrably still works) - no search needed.
-        lo = max(known_fail_floor, -1)
-        starting_hint = lo + 1
-        if starting_hint <= block_count and probe(starting_hint):
-            boundary = starting_hint
-        else:
-            # Binary search in (lo, block_count]. Verify the top end
-            # first - if even fully offloaded doesn't fit, this depth is
-            # infeasible outright, regardless of n_cpu_moe.
-            if not probe(block_count):
-                by_depth.append({
-                    "depth": depth,
-                    "min_ncmoe_that_fits": None,
-                    "results": [{"n_cpu_moe": k, "status": "ok" if v[0] else "failed",
-                                  "avg_ts": v[1] if v[0] else None} for k, v in sorted(tested.items())],
-                })
-                print(f"    depth={depth}: nothing fits even at ncmoe={block_count} "
-                      f"(fully offloaded); deeper depths won't fit either, stopping", flush=True)
-                if progress is not None:
-                    progress.prune(
-                        (per_depth_budget - len(tested))
-                        + (len(depths) - depth_index - 1) * per_depth_budget,
-                        "fully offloaded experts could not fit at this depth",
-                    )
-                break
-            hi = block_count
-            search_lo = max(lo, starting_hint)
-            while hi - search_lo > 1:
-                mid = (search_lo + hi) // 2
-                if probe(mid):
-                    hi = mid
-                else:
-                    search_lo = mid
-            boundary = hi
+        # Drive the pure boundary-search generator: it decides which
+        # n_cpu_moe to try next, this loop performs the actual probe I/O.
+        search = resolve_boundary(known_fail_floor=known_fail_floor, block_count=block_count)
+        try:
+            ncmoe = next(search)
+            while True:
+                ncmoe = search.send(probe(ncmoe))
+        except StopIteration as stop:
+            boundary, _search_tested = stop.value
+
+        if boundary is None:
+            by_depth.append({
+                "depth": depth,
+                "min_ncmoe_that_fits": None,
+                "results": [{"n_cpu_moe": k, "status": "ok" if v[0] else "failed",
+                              "avg_ts": v[1] if v[0] else None} for k, v in sorted(tested.items())],
+            })
+            print(f"    depth={depth}: nothing fits even at ncmoe={block_count} "
+                  f"(fully offloaded); deeper depths won't fit either, stopping", flush=True)
+            if progress is not None:
+                progress.prune(
+                    (per_depth_budget - len(tested))
+                    + (len(depths) - depth_index - 1) * per_depth_budget,
+                    "fully offloaded experts could not fit at this depth",
+                )
+            break
 
         # Extra throughput samples above the boundary, for the dive
         # curve - bisection alone only samples near the boundary, not
         # spread across the range above it.
         if boundary < block_count and MOE_EXTRA_SAMPLE_COUNT > 0:
-            for ncmoe in thorough_extra_candidates(boundary, block_count, MOE_EXTRA_SAMPLE_COUNT):
+            for ncmoe in extra_throughput_samples(
+                boundary=boundary, block_count=block_count, sample_count=MOE_EXTRA_SAMPLE_COUNT,
+            ):
                 probe(ncmoe)
 
         known_fail_floor = boundary - 1
@@ -829,48 +770,6 @@ def pick_best_ubatch(results_dir: Path, model: str, candidates: list[int]) -> in
             best_score = score
             best_ubatch = ubatch
     return best_ubatch
-
-
-def write_curve_summary(results: list[RunResult], summary_path: Path) -> int:
-    fieldnames = [
-        "model", "series", "ubatch", "batch", "ctk", "ctv", "flash_attn", "n_cpu_moe",
-        "n_depth", "n_prompt", "n_gen", "avg_ts", "avg_ns", "status",
-    ]
-    row_count = 0
-    with summary_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for result in results:
-            rows = load_jsonl_rows(result.jsonl_path)
-            for row in rows:
-                # A row's own depth may have completed successfully even
-                # when a *later*, deeper depth in the same series failed or
-                # timed out (result.status == "partial" reflects the whole
-                # series). Stamping every row with the series-level status
-                # would wrongly mark a genuinely successful depth-0 sample
-                # as "partial", hiding it from consumers (e.g. the viewer's
-                # depth0_throughput()) that only trust "ok" rows. depths_run
-                # only ever contains depths whose probe returned rc=0, so a
-                # row's depth being in it is a reliable per-row signal.
-                row_status = "ok" if row.get("n_depth") in result.depths_run else result.status
-                writer.writerow({
-                    "model": model_key(result.model),
-                    "series": result.series,
-                    "ubatch": result.config.ubatch,
-                    "batch": result.config.batch,
-                    "ctk": result.config.ctk,
-                    "ctv": result.config.ctv,
-                    "flash_attn": result.config.flash_attn,
-                    "n_cpu_moe": result.config.n_cpu_moe,
-                    "n_depth": row.get("n_depth"),
-                    "n_prompt": row.get("n_prompt"),
-                    "n_gen": row.get("n_gen"),
-                    "avg_ts": row.get("avg_ts"),
-                    "avg_ns": row.get("avg_ns"),
-                    "status": row_status,
-                })
-                row_count += 1
-    return row_count
 
 
 def parse_args() -> argparse.Namespace:
@@ -953,14 +852,10 @@ def main() -> None:
     # run_one() resolves symlinks separately, only for the Docker mount.
     models = []
     for m in args.model:
-        if hf_models.looks_like_hf_reference(m):
-            try:
-                resolved = hf_models.resolve_hf_reference(m)
-            except hf_models.HfReferenceError as e:
-                sys.exit(f"Error resolving {m!r}: {e}")
-            models.append(Path(resolved))
-        else:
-            models.append(Path(m).expanduser().absolute())
+        try:
+            models.append(resolve_model_reference(m))
+        except hf_models.HfReferenceError as e:
+            sys.exit(f"Error resolving {m!r}: {e}")
     for model in models:
         if not model.is_file():
             sys.exit(f"Model file not found: {model}")
@@ -1101,21 +996,21 @@ def main() -> None:
         mode = "full-sweep" if args.full_sweep else ("calibrate-legacy" if args.calibrate else "fixed")
         completed_at = datetime.now(timezone.utc).isoformat()
 
-        manifest = {
-            "image": args.image,
-            "device": args.device,
-            "depths": list(depths),
-            "context_length": max_ctx,
-            "final_config": asdict(config),
-            "tuning_log": tuning_log,
-            "moe_offload_curve": moe_offload_result,
-            "repetitions": REPETITIONS,
-            "prefill_tokens": PREFILL_TOKENS,
-            "generation_tokens": GENERATION_TOKENS,
-            "mode": mode,
-            "completed_at": completed_at,
-            "summary_rows": rows,
-            "runs": [
+        manifest = build_campaign_manifest(
+            image=args.image,
+            device=args.device,
+            depths=depths,
+            context_length=max_ctx,
+            final_config=asdict(config),
+            tuning_log=tuning_log,
+            moe_offload_curve=moe_offload_result,
+            repetitions=REPETITIONS,
+            prefill_tokens=PREFILL_TOKENS,
+            generation_tokens=GENERATION_TOKENS,
+            mode=mode,
+            completed_at=completed_at,
+            summary_rows=rows,
+            run_summaries=[
                 {
                     "series": r.series, "config": asdict(r.config), "status": r.status,
                     "return_code": r.return_code, "depths_run": list(r.depths_run),
@@ -1123,10 +1018,8 @@ def main() -> None:
                 }
                 for r in results
             ],
-        }
-        (model_results_dir / "campaign_manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        write_json(model_results_dir / "campaign_manifest.json", manifest)
 
         best_depth0_ts = None
         gen_rows = [r for r in results if r.series == "generation"]
@@ -1134,28 +1027,25 @@ def main() -> None:
             ts = mean_ts(gen_rows[0].jsonl_path)
             best_depth0_ts = ts if ts >= 0 else None
 
-        metadata = {
-            "model_slug": slug,
-            "model_filename": model.name,
-            "model_architecture": gguf_metadata.get("general.architecture"),
-            "model_name": gguf_metadata.get("general.name"),
-            "model_context_length": max_ctx,
-            "model_moe": moe,
-            "run_id": run_id,
-            "run_completed_at": completed_at,
-            "mode": mode,
-            "environment": env,
-            "final_config": asdict(config),
-            "depths_tested": list(depths),
-            "generation_tok_s_mean": best_depth0_ts,
-            "status": "failed" if failed else ("partial" if partial else "finished"),
-        }
-        (model_results_dir / "metadata.json").write_text(
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        metadata = build_run_metadata(
+            model_slug=slug,
+            model_filename=model.name,
+            model_architecture=gguf_metadata.get("general.architecture"),
+            model_name=gguf_metadata.get("general.name"),
+            model_context_length=max_ctx,
+            model_moe=moe,
+            run_id=run_id,
+            run_completed_at=completed_at,
+            mode=mode,
+            environment=env,
+            final_config=asdict(config),
+            depths_tested=depths,
+            generation_tok_s_mean=best_depth0_ts,
+            status="failed" if failed else ("partial" if partial else "finished"),
         )
+        write_json(model_results_dir / "metadata.json", metadata)
 
-        marker = "campaign.failed" if failed else ("campaign.partial" if partial else "campaign.finished")
-        (model_results_dir / marker).touch()
+        write_status_marker(model_results_dir, failed=bool(failed), partial=bool(partial))
 
         print(f"  Curve summary: {summary_path} ({rows} rows)", flush=True)
         if failed:

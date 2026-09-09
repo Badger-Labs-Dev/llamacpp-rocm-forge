@@ -1,6 +1,7 @@
 import unittest
 
 from bench_app.adapters.outbound.docker_llama_bench import LlamaBenchProbe, docker_command
+from bench_app.adapters.outbound.model_resolution import model_slug
 from bench_app.application.viewer_dataset import SCHEMA_VERSION, validate_viewer_dataset
 from bench_app.domain.planning import campaign_budget, quick_moe_candidates
 from bench_app.domain.progress import ProbeProgress
@@ -44,6 +45,12 @@ class BenchmarkApplicationTests(unittest.TestCase):
         self.assertIn("-ncmoe", command)
         self.assertEqual(command[command.index("-ncmoe") + 1], "7")
         self.assertIn("/models-host:/models:ro", command)
+
+    def test_model_slug_collapses_non_alphanumerics_and_lowercases(self):
+        from pathlib import Path
+        self.assertEqual(model_slug(Path("Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf")), "qwen3-6-35b-a3b-ud-q4-k-xl")
+        self.assertEqual(model_slug(Path("plain.gguf")), "plain")
+        self.assertEqual(model_slug(Path("---.gguf")), "model")  # all-non-alphanumeric stem falls back
 
     def test_viewer_contract_requires_version_and_required_run_fields(self):
         dataset = {
