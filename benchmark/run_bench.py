@@ -1,65 +1,36 @@
 #!/usr/bin/env python3
 """Run a llama-bench parameter sweep against a Docker container on this host.
 
-Standalone replacement for upstream's run_calibrated_campaign.py, which
-assumes their Toolbx/Cockpit stack and SSH hosts. This drives `docker run` +
-`llama-bench` directly and writes one JSONL file per (model, series, config)
-combination plus a curve_summary.csv, mirroring the shape of upstream's
-output closely enough to stay comparable.
+Drives `docker run` + `llama-bench` directly, writing one JSONL file per
+(model, series, config) plus a curve_summary.csv.
 
-Depths (llama-bench's "-d", how full the KV cache is before the timed run)
-are derived per model from its GGUF *.context_length metadata (see
-gguf_metadata.py): every entry in COMMON_CONTEXT_SIZES that fits under the
-model's trained context length gets tested, plus depth 0. Testing past a
-model's trained context produces throughput numbers but not meaningful
-ones, since RoPE positions past that point were never seen in training.
-Falls back to LEGACY_FIXED_DEPTHS if a model's context_length can't be read.
+Depths (llama-bench's "-d") are derived per model from its GGUF
+*.context_length metadata (see adapters/outbound/gguf_metadata.py):
+every COMMON_CONTEXT_SIZES entry that fits under the trained context
+length is tested, plus depth 0. Falls back to LEGACY_FIXED_DEPTHS if
+context_length can't be read.
 
 Tuning modes (pick one; --full-sweep is the general recommendation):
 
   (default)     Fixed config: ubatch=2048, batch=2048, ctk/ctv=f16, fa=auto.
   --ubatch N    Fixed config as above but with this ubatch.
-  --calibrate   Legacy: sweep only UBATCH_CANDIDATES at depth 0, holding
-                batch/KV-cache at their defaults (fa=auto). Kept for
+  --calibrate   Legacy: sweep only UBATCH_CANDIDATES at depth 0. Kept for
                 backward compatibility with earlier results directories.
   --full-sweep  Staged auto-tune across ubatch, batch, and KV cache dtype
-                (f16/q8_0/q4_0) - see application/auto_tune.py. Runs a
-                handful of quick 2-depth probes per stage rather than a
-                full grid (which would be 4 ubatch x 4 batch x 3 KV = 48
-                combinations - infeasible to run at full depth x 3
-                repetitions). The final chosen config is then run across
-                the model's full derived depth curve exactly once.
+                (f16/q8_0/q4_0) - see application/auto_tune.py.
 
-Flash attention is not swept: always passed as "auto" (llama-bench's -fa
-auto|on|off, this build's own default), which lets llama.cpp decide per
-model/backend at load time whether the fused kernel actually applies.
-Forcing it "on" doesn't help on architectures where FA can't apply
-anyway (KQ-bias models, some hybrid/SSM architectures, unsupported head
-dims - these fall back to the ordinary attention path regardless of the
-flag, silently), and for a few architectures (e.g. sparse-attention
-models) FA isn't just a speed knob, disabling it changes output
-correctness. llama.cpp's own "auto" already encodes this judgment call
-better than we can by sweeping 0/1 ourselves.
+Flash attention is always "auto", not swept - llama.cpp's own default
+already picks the fused kernel when it applies, and forcing it on/off
+doesn't help on architectures where it can't apply anyway. Quantized KV
+cache (ctk/ctv != f16) requires FA on regardless; BenchConfig.validate()
+enforces that.
 
-llama.cpp requires flash attention ON whenever KV cache is quantized
-(ctk/ctv != f16); BenchConfig.validate() enforces this rather than trying
-invalid combinations - "auto" alone isn't a safe default there, since
-auto isn't guaranteed to actually enable FA.
-
-For MoE models (detected from GGUF *.expert_count metadata; a no-op for
-dense models), --sweep-moe-offload additionally sweeps --n-cpu-moe
-across the model's derived depths, answering "what's the minimum
---n-cpu-moe that fits at this context depth, and how much does
-throughput drop as more gets offloaded to CPU". Every expert has to be
-resident in VRAM regardless of how few are actually active per token
-(the router can pick any of them per-token) - see moe_params() and
-application/moe_sweep.py for the actual mechanics.
---sweep-moe-offload-thorough binary-searches the exact fitting boundary
-per depth instead of testing fixed evenly-spaced candidates.
-
-Note: llama-bench has no flag for speculative decoding / multi-token
-prediction (MTP) - that's a llama-server/llama-cli feature (-md draft
-model), not something this benchmark tool measures.
+For MoE models (detected from GGUF *.expert_count; a no-op for dense
+models), --sweep-moe-offload sweeps --n-cpu-moe across depths to find
+the minimum offload that fits and how throughput drops as more gets
+offloaded - see application/moe_sweep.py. --sweep-moe-offload-thorough
+binary-searches the exact boundary per depth instead of using fixed
+evenly-spaced candidates.
 
 Usage:
     ./run_bench.py --model /models/foo.gguf --full-sweep
