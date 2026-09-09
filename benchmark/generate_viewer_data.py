@@ -17,8 +17,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
+
+from bench_app.application.viewer_dataset import SCHEMA_VERSION, validate_viewer_dataset
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = SCRIPT_DIR.parent / "results"
@@ -43,10 +46,17 @@ def read_curve(path: Path) -> list[dict]:
     with path.open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             try:
+                avg_ts = float(row["avg_ts"]) if row["avg_ts"] else None
+                # json.dumps emits the bare (non-JSON-spec) tokens NaN/
+                # Infinity/-Infinity for these values; llama-bench never
+                # legitimately produces them, so normalize to null rather
+                # than publishing invalid JSON in results.json.
+                if avg_ts is not None and not math.isfinite(avg_ts):
+                    avg_ts = None
                 rows.append({
                     "series": row["series"],
                     "n_depth": int(row["n_depth"]),
-                    "avg_ts": float(row["avg_ts"]) if row["avg_ts"] else None,
+                    "avg_ts": avg_ts,
                     "status": row["status"],
                 })
             except (KeyError, ValueError):
@@ -138,9 +148,11 @@ def main() -> None:
             models.append(entry)
 
     output = {
+        "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "models": models,
     }
+    validate_viewer_dataset(output)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")

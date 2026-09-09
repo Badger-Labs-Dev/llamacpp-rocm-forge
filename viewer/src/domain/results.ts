@@ -1,3 +1,6 @@
+// Viewer-domain representation of contracts/viewer-dataset.schema.json.
+// Keep this framework-free: React and Recharts are adapters.
+
 export interface CurveRow {
   series: "prefill" | "generation";
   n_depth: number;
@@ -16,13 +19,8 @@ export interface FinalConfig {
   batch: number;
   ctk: string;
   ctv: string;
-  flash_attn: string; // "auto" | "on" | "off" - always "auto" as of the
-    // change that stopped sweeping this (llama.cpp's own default, lets
-    // it decide per model/backend whether the fused kernel applies)
-  n_cpu_moe: number; // llama-bench's -ncmoe. A dense or fixed run normally
-    // stays at 0. A full MoE sweep tunes its shared settings with all experts
-    // offloaded so deep probes remain viable; MoeOffloadCurve supplies the
-    // context-specific minimum rather than a single global recommendation.
+  flash_attn: string;
+  n_cpu_moe: number;
 }
 
 export interface MoeOffloadPoint {
@@ -33,13 +31,13 @@ export interface MoeOffloadPoint {
 
 export interface MoeOffloadDepth {
   depth: number;
-  min_ncmoe_that_fits: number | null; // null = nothing fit, even fully offloaded
+  min_ncmoe_that_fits: number | null;
   results: MoeOffloadPoint[];
 }
 
 export interface MoeOffloadCurve {
   mode: "quick" | "thorough";
-  candidates_tested?: number[]; // quick mode only
+  candidates_tested?: number[];
   expert_count: number;
   expert_used_count: number | null;
   block_count: number;
@@ -58,7 +56,7 @@ export interface Environment {
 
 export interface RunEntry {
   run_id: string;
-  run_completed_at: string;
+  run_completed_at: string | null;
   status: string;
   mode: string;
   environment: Environment;
@@ -81,6 +79,7 @@ export interface ModelEntry {
 }
 
 export interface ResultsFile {
+  schema_version: 1;
   generated_at: string;
   models: ModelEntry[];
 }

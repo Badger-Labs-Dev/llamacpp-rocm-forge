@@ -86,6 +86,7 @@ The raw `results/` directory is committed because CI has no GPU to reproduce it.
 - [Benchmarking strategy, context depths, and recovery](docs/benchmarking.md)
 - [MoE expert offload](docs/moe-offload.md)
 - [Results and viewer](docs/results-and-viewer.md)
+- [Application architecture](docs/architecture.md)
 - [VRAM estimator](docs/vram-estimator.md)
 
 ## Scope

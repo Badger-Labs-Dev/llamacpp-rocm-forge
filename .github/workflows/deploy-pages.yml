@@ -1,10 +1,13 @@
 name: Deploy viewer to GitHub Pages
 
 # Builds benchmark/generate_viewer_data.py's output + the Vite app in
-# viewer/ and publishes it to GitHub Pages. results/ isn't committed (see
-# .gitignore) - if it's ever empty here, generate_viewer_data.py still
-# writes a valid empty models: [] results.json and the site deploys with
-# an empty state rather than failing the build.
+# viewer/ and publishes it to GitHub Pages. results/ is committed to the
+# repo (checked out via actions/checkout@v4 above) because CI has no GPU
+# to reproduce it; "Ensure results/ exists" below only guards the edge
+# case of a completely empty repo checkout, in which case
+# generate_viewer_data.py still writes a valid empty models: []
+# results.json and the site deploys with an empty state rather than
+# failing the build.
 on:
   push:
     branches: [main]

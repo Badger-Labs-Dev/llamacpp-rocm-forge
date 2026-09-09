@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { MoeOffloadCurve } from "./types";
+import type { MoeOffloadCurve } from "../../../domain/results";
 
 interface Props {
   curve: MoeOffloadCurve;

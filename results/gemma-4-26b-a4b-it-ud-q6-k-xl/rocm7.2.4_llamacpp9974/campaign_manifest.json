@@ -1,0 +1,352 @@
+{
+  "completed_at": "2026-09-09T03:37:02.820933+00:00",
+  "context_length": 262144,
+  "depths": [
+    0,
+    2048,
+    6144,
+    14336,
+    22528,
+    30720,
+    47104,
+    63488,
+    96256,
+    129024,
+    260096
+  ],
+  "device": "ROCm0",
+  "final_config": {
+    "batch": 2048,
+    "ctk": "f16",
+    "ctv": "f16",
+    "flash_attn": "auto",
+    "n_cpu_moe": 30,
+    "ubatch": 2048
+  },
+  "generation_tokens": 128,
+  "image": "r9700-llm-bench:rocm-7.2.4",
+  "mode": "full-sweep",
+  "moe_offload_curve": {
+    "block_count": 30,
+    "by_depth": [
+      {
+        "depth": 0,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 3020.286793,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 2621.387063,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 2372.564113,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 2048,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 2459.852691,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 2189.021702,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 2022.40578,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 6144,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 2170.012676,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1962.677637,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1825.707876,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 14336,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 1701.120181,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1571.365112,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1483.923329,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 22528,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 1423.982466,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1330.988092,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1268.586587,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 30720,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 1206.069307,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1138.898624,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 1094.753689,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 47104,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 929.486231,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 889.839111,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 863.480636,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 63488,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 749.132002,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 723.092084,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 707.015565,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 96256,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 543.322505,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 528.949279,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 520.313951,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 129024,
+        "min_ncmoe_that_fits": 0,
+        "results": [
+          {
+            "avg_ts": 422.422283,
+            "n_cpu_moe": 0,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 413.894947,
+            "n_cpu_moe": 10,
+            "status": "ok"
+          },
+          {
+            "avg_ts": 410.999477,
+            "n_cpu_moe": 20,
+            "status": "ok"
+          }
+        ]
+      },
+      {
+        "depth": 260096,
+        "min_ncmoe_that_fits": null,
+        "results": [
+          {
+            "avg_ts": null,
+            "n_cpu_moe": 0,
+            "status": "failed"
+          },
+          {
+            "avg_ts": null,
+            "n_cpu_moe": 30,
+            "status": "failed"
+          }
+        ]
+      }
+    ],
+    "expert_count": 128,
+    "expert_used_count": 8,
+    "mode": "thorough"
+  },
+  "prefill_tokens": 2048,
+  "repetitions": 3,
+  "runs": [
+    {
+      "config": {
+        "batch": 2048,
+        "ctk": "f16",
+        "ctv": "f16",
+        "flash_attn": "auto",
+        "n_cpu_moe": 30,
+        "ubatch": 2048
+      },
+      "depths_run": [
+        0,
+        2048,
+        6144,
+        14336,
+        22528,
+        30720,
+        47104,
+        63488,
+        96256,
+        129024
+      ],
+      "depths_skipped": [],
+      "return_code": -1,
+      "series": "prefill",
+      "status": "partial",
+      "stop_reason": "depth 260096 timed out after 300s (likely OOM/thrashing rather than a clean error); skipping larger depths"
+    },
+    {
+      "config": {
+        "batch": 2048,
+        "ctk": "f16",
+        "ctv": "f16",
+        "flash_attn": "auto",
+        "n_cpu_moe": 30,
+        "ubatch": 2048
+      },
+      "depths_run": [
+        0,
+        2048,
+        6144,
+        14336,
+        22528,
+        30720,
+        47104,
+        63488,
+        96256,
+        129024
+      ],
+      "depths_skipped": [],
+      "return_code": -1,
+      "series": "generation",
+      "status": "partial",
+      "stop_reason": "depth 260096 timed out after 300s (likely OOM/thrashing rather than a clean error); skipping larger depths"
+    }
+  ],
+  "summary_rows": 20,
+  "tuning_log": [
+    {
+      "scores": {
+        "f16": -1.0,
+        "q4_0": -1.0,
+        "q8_0": -1.0
+      },
+      "stage": "kv_cache_dtype",
+      "winner": "f16"
+    },
+    {
+      "scores": {
+        "ub1024_b1024": 1507.008453,
+        "ub1024_b2048": 1508.415409,
+        "ub1024_b4096": 1509.165651,
+        "ub2048_b2048": 2115.861807,
+        "ub2048_b4096": 2115.677108,
+        "ub256_b1024": 597.361625,
+        "ub256_b2048": 596.250683,
+        "ub256_b4096": 597.656743,
+        "ub256_b512": 593.260933,
+        "ub512_b1024": 983.456886,
+        "ub512_b2048": 984.750932,
+        "ub512_b4096": 985.026737,
+        "ub512_b512": 982.323749
+      },
+      "stage": "ubatch_batch_grid",
+      "winner": "ub2048_b2048"
+    }
+  ]
+}

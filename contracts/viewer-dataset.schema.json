@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://badger-labs-dev.github.io/r9700-llm-bench/contracts/viewer-dataset.schema.json",
+  "title": "R9700 benchmark viewer dataset",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "models"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model" }
+    }
+  },
+  "$defs": {
+    "model": {
+      "type": "object",
+      "required": ["model_slug", "runs"],
+      "properties": {
+        "model_slug": { "type": "string" },
+        "model_filename": { "type": ["string", "null"] },
+        "model_architecture": { "type": ["string", "null"] },
+        "model_name": { "type": ["string", "null"] },
+        "model_context_length": { "type": ["integer", "null"] },
+        "runs": { "type": "array", "items": { "$ref": "#/$defs/run" } }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["run_id", "status", "mode", "environment", "final_config", "curve", "tuning_log", "moe_offload_curve"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "run_completed_at": { "type": ["string", "null"] },
+        "status": { "type": "string" },
+        "mode": { "type": "string" },
+        "environment": { "type": "object" },
+        "final_config": { "$ref": "#/$defs/final_config" },
+        "depths_tested": { "type": "array", "items": { "type": "integer" } },
+        "prefill_depth0_ts": { "type": ["number", "null"] },
+        "generation_depth0_ts": { "type": ["number", "null"] },
+        "curve": { "type": "array", "items": { "$ref": "#/$defs/curve_row" } },
+        "tuning_log": { "type": "array", "items": { "$ref": "#/$defs/tuning_stage" } },
+        "moe_offload_curve": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/moe_offload_curve" }]
+        }
+      }
+    },
+    "curve_row": {
+      "type": "object",
+      "required": ["series", "n_depth", "avg_ts", "status"],
+      "properties": {
+        "series": { "type": "string", "enum": ["prefill", "generation"] },
+        "n_depth": { "type": "integer" },
+        "avg_ts": { "type": ["number", "null"] },
+        "status": { "type": "string" }
+      }
+    },
+    "tuning_stage": {
+      "type": "object",
+      "required": ["stage", "scores", "winner"],
+      "properties": {
+        "stage": { "type": "string" },
+        "scores": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "number" }
+        },
+        "winner": { "type": ["string", "number"] }
+      }
+    },
+    "final_config": {
+      "type": "object",
+      "properties": {
+        "ubatch": { "type": "integer" },
+        "batch": { "type": "integer" },
+        "ctk": { "type": "string" },
+        "ctv": { "type": "string" },
+        "flash_attn": { "type": "string" },
+        "n_cpu_moe": { "type": "integer" }
+      }
+    },
+    "moe_offload_curve": {
+      "type": "object",
+      "required": ["mode", "expert_count", "expert_used_count", "block_count", "by_depth"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["quick", "thorough"] },
+        "candidates_tested": { "type": "array", "items": { "type": "integer" } },
+        "expert_count": { "type": "integer" },
+        "expert_used_count": { "type": ["integer", "null"] },
+        "block_count": { "type": "integer" },
+        "by_depth": { "type": "array", "items": { "$ref": "#/$defs/moe_offload_depth" } }
+      }
+    },
+    "moe_offload_depth": {
+      "type": "object",
+      "required": ["depth", "min_ncmoe_that_fits", "results"],
+      "properties": {
+        "depth": { "type": "integer" },
+        "min_ncmoe_that_fits": { "type": ["integer", "null"] },
+        "results": { "type": "array", "items": { "$ref": "#/$defs/moe_offload_point" } }
+      }
+    },
+    "moe_offload_point": {
+      "type": "object",
+      "required": ["n_cpu_moe", "status", "avg_ts"],
+      "properties": {
+        "n_cpu_moe": { "type": "integer" },
+        "status": { "type": "string", "enum": ["ok", "failed"] },
+        "avg_ts": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

@@ -71,7 +71,6 @@ import argparse
 import atexit
 import csv
 import json
-import math
 import re
 import signal
 import subprocess
@@ -83,6 +82,17 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from gguf_info import context_length, moe_params, read_gguf_metadata
+from bench_app.adapters.outbound.docker_llama_bench import (
+    LlamaBenchProbe,
+    docker_command as build_docker_command,
+    llama_bench_command,
+)
+from bench_app.domain.planning import (
+    campaign_budget,
+    quick_moe_candidates,
+    thorough_extra_candidates,
+    thorough_max_probes_per_depth,
+)
 import environment_info
 import hf_models
 from progress_tracker import ProgressTracker
@@ -243,12 +253,26 @@ def derive_depths_for_model(model_path: Path) -> tuple[tuple[int, ...], int | No
     return tuple(sorted(depths)), max_ctx
 
 
-def docker_gpu_args(gpu_gids: list[str]) -> list[str]:
-    args = ["--device", "/dev/dri", "--device", "/dev/kfd"]
-    for gid in gpu_gids:
-        args += ["--group-add", gid]
-    args += ["--security-opt", "seccomp=unconfined", "--ipc=host"]
-    return args
+def probe_for(*, model_container_path: str, series: str, config: BenchConfig, device: str, depth: int) -> LlamaBenchProbe:
+    """Build a LlamaBenchProbe from a BenchConfig - the single place that
+    maps run_bench's configuration model onto the Docker adapter's probe
+    contract, so build_llama_bench_command() and run_one() can't drift."""
+    return LlamaBenchProbe(
+        model_container_path=model_container_path,
+        series=series,
+        batch=config.batch,
+        ubatch=config.ubatch,
+        flash_attn=config.flash_attn,
+        n_cpu_moe=config.n_cpu_moe,
+        ctk=config.ctk,
+        ctv=config.ctv,
+        device=device,
+        depth=depth,
+        repetitions=REPETITIONS,
+        gpu_layers=GPU_LAYERS,
+        prefill_tokens=PREFILL_TOKENS,
+        generation_tokens=GENERATION_TOKENS,
+    )
 
 
 def build_llama_bench_command(
@@ -259,29 +283,14 @@ def build_llama_bench_command(
     device: str,
     depth: int,
 ) -> list[str]:
-    cmd = [
-        "llama-bench",
-        "-m", model_container_path,
-        "-o", "jsonl",
-        "-oe", "jsonl",
-        "-r", str(REPETITIONS),
-        "-b", str(config.batch),
-        "-ub", str(config.ubatch),
-        "-ngl", str(GPU_LAYERS),
-        "-fa", config.flash_attn,
-        "-ncmoe", str(config.n_cpu_moe),
-        "-mmp", "0",
-        "-ctk", config.ctk,
-        "-ctv", config.ctv,
-        "-dev", device,
-        "-d", str(depth),
-        "--progress",
-    ]
-    if series == "prefill":
-        cmd += ["-p", str(PREFILL_TOKENS), "-n", "0"]
-    else:
-        cmd += ["-p", "0", "-n", str(GENERATION_TOKENS)]
-    return cmd
+    """Compatibility wrapper around the Docker adapter's llama.cpp command."""
+    return llama_bench_command(probe_for(
+        model_container_path=model_container_path,
+        series=series,
+        config=config,
+        device=device,
+        depth=depth,
+    ))
 
 
 def run_one(
@@ -344,18 +353,20 @@ def run_one(
                 continue
 
             container_name = f"r9700-llm-bench-{uuid.uuid4().hex[:12]}"
-            bench_cmd = build_llama_bench_command(
+            probe = probe_for(
                 model_container_path=container_model_path,
-                series=series, config=config, device=device, depth=depth,
+                series=series,
+                config=config,
+                device=device,
+                depth=depth,
             )
-            docker_cmd = [
-                "docker", "run", "--rm",
-                "--name", container_name,
-                *docker_gpu_args(gpu_gids),
-                "-v", f"{real_model_path.parent}:/models:ro",
-                image,
-                *bench_cmd,
-            ]
+            docker_cmd = build_docker_command(
+                image=image,
+                container_name=container_name,
+                gpu_gids=gpu_gids,
+                model_directory=str(real_model_path.parent),
+                probe=probe,
+            )
             last_command = docker_cmd
             print(f"    $ {' '.join(docker_cmd)}", flush=True)
             if progress is not None:
@@ -574,68 +585,29 @@ def valid_batch_grid_count() -> int:
     return sum(ub <= batch for ub in UBATCH_CANDIDATES for batch in BATCH_CANDIDATES)
 
 
-def thorough_extra_candidates(boundary: int, block_count: int) -> tuple[int, ...]:
-    """Spread additional throughput samples above a fitting boundary."""
-    remaining = block_count - boundary
-    if remaining <= 0 or MOE_EXTRA_SAMPLE_COUNT <= 0:
-        return ()
-    step = max(1, remaining // MOE_EXTRA_SAMPLE_COUNT)
-    return tuple(range(boundary + step, block_count, step))
-
-
-def thorough_max_extra_samples(block_count: int) -> int:
-    """Largest number of extra throughput probes the current spacing can emit."""
-    return max(
-        (len(thorough_extra_candidates(boundary, block_count)) for boundary in range(block_count + 1)),
-        default=0,
-    )
-
-
-def thorough_max_probes_per_depth(block_count: int) -> int:
-    """Conservative per-depth bound for bisection plus throughput samples."""
-    return 2 + math.ceil(math.log2(block_count + 1)) + thorough_max_extra_samples(block_count)
-
-
 def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: dict | None) -> tuple[int, str]:
-    """Return one model's maximum Docker invocations before dynamic pruning."""
-    depth_count = len(depths)
-    parts: list[tuple[str, int]] = []
-    if args.full_sweep:
-        parts.append(("tuning", len(KV_CACHE_TYPES) * len(probe_depths(depths)) + valid_batch_grid_count()))
-    elif args.calibrate:
-        parts.append(("calibration", len(UBATCH_CANDIDATES) * depth_count))
-
+    """CLI adapter around the domain campaign-budget calculation."""
     should_sweep_moe = moe is not None and (
         args.full_sweep or args.sweep_moe_offload or args.sweep_moe_offload_thorough
     )
-    block_count = moe.get("block_count") if moe is not None else None
-    if should_sweep_moe and block_count:
-        if args.sweep_moe_offload_thorough:
-            count = depth_count * thorough_max_probes_per_depth(block_count)
-            parts.append(("thorough MoE", count))
-        else:
-            count = depth_count * len(moe_offload_candidates(block_count))
-            parts.append(("quick MoE", count))
-
-    parts.append(("final curves", 2 * depth_count))
-    total = sum(count for _, count in parts)
-    detail = ", ".join(f"{count} {name}" for name, count in parts)
-    return total, detail
+    budget = campaign_budget(
+        depth_count=len(depths),
+        full_sweep=args.full_sweep,
+        calibrate=args.calibrate,
+        valid_batch_pairs=valid_batch_grid_count(),
+        kv_type_count=len(KV_CACHE_TYPES),
+        tuning_depth_count=len(probe_depths(depths)),
+        moe_block_count=(moe or {}).get("block_count") if should_sweep_moe else None,
+        thorough_moe=args.sweep_moe_offload_thorough,
+        quick_candidate_count=MOE_QUICK_CANDIDATE_COUNT,
+        thorough_extra_sample_count=MOE_EXTRA_SAMPLE_COUNT,
+    )
+    return budget.total, budget.detail
 
 
 def moe_offload_candidates(block_count: int, n: int = MOE_QUICK_CANDIDATE_COUNT) -> tuple[int, ...]:
-    """Evenly spaced --n-cpu-moe candidates across [0, block_count], quick mode.
-
-    n_cpu_moe=0 (nothing offloaded, fastest, most likely to OOM) is always
-    included, as is block_count (everything offloaded, slowest, most
-    likely to fit) - the two ends of the tradeoff.
-    """
-    if block_count <= 0:
-        return (0,)
-    if n <= 1 or block_count < n - 1:
-        return tuple(sorted(set(range(0, block_count + 1))))
-    step = block_count / (n - 1)
-    return tuple(sorted(set(round(i * step) for i in range(n))))
+    """Compatibility name for the domain's quick MoE candidate rule."""
+    return quick_moe_candidates(block_count, n)
 
 
 def probe_moe_offload(
@@ -758,7 +730,7 @@ def sweep_moe_offload_thorough(
     """
     by_depth = []
     known_fail_floor = -1  # -1 means "no known-failing value yet" (0 might fit)
-    per_depth_budget = thorough_max_probes_per_depth(block_count)
+    per_depth_budget = thorough_max_probes_per_depth(block_count, MOE_EXTRA_SAMPLE_COUNT)
 
     for depth_index, depth in enumerate(depths):
         tested: dict[int, tuple[bool, float]] = {}
@@ -818,7 +790,7 @@ def sweep_moe_offload_thorough(
         # curve - bisection alone only samples near the boundary, not
         # spread across the range above it.
         if boundary < block_count and MOE_EXTRA_SAMPLE_COUNT > 0:
-            for ncmoe in thorough_extra_candidates(boundary, block_count):
+            for ncmoe in thorough_extra_candidates(boundary, block_count, MOE_EXTRA_SAMPLE_COUNT):
                 probe(ncmoe)
 
         known_fail_floor = boundary - 1
@@ -871,6 +843,16 @@ def write_curve_summary(results: list[RunResult], summary_path: Path) -> int:
         for result in results:
             rows = load_jsonl_rows(result.jsonl_path)
             for row in rows:
+                # A row's own depth may have completed successfully even
+                # when a *later*, deeper depth in the same series failed or
+                # timed out (result.status == "partial" reflects the whole
+                # series). Stamping every row with the series-level status
+                # would wrongly mark a genuinely successful depth-0 sample
+                # as "partial", hiding it from consumers (e.g. the viewer's
+                # depth0_throughput()) that only trust "ok" rows. depths_run
+                # only ever contains depths whose probe returned rc=0, so a
+                # row's depth being in it is a reliable per-row signal.
+                row_status = "ok" if row.get("n_depth") in result.depths_run else result.status
                 writer.writerow({
                     "model": model_key(result.model),
                     "series": result.series,
@@ -885,7 +867,7 @@ def write_curve_summary(results: list[RunResult], summary_path: Path) -> int:
                     "n_gen": row.get("n_gen"),
                     "avg_ts": row.get("avg_ts"),
                     "avg_ns": row.get("avg_ns"),
-                    "status": result.status,
+                    "status": row_status,
                 })
                 row_count += 1
     return row_count

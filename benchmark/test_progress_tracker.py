@@ -1,10 +1,14 @@
 import argparse
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import run_bench
+from generate_viewer_data import depth0_throughput, read_curve
 from progress_tracker import ProgressTracker
-from run_bench import BenchConfig, planned_probe_count, sweep_moe_offload_quick
+from run_bench import BenchConfig, RunResult, planned_probe_count, sweep_moe_offload_quick, write_curve_summary
 
 
 class ProgressTrackerTests(unittest.TestCase):
@@ -83,6 +87,54 @@ class ProgressTrackerTests(unittest.TestCase):
         # probes + up to 4 throughput samples), then 2 final series × 3 depths.
         self.assertEqual(total, 61)
         self.assertEqual(detail, "19 tuning, 36 thorough MoE, 6 final curves")
+
+    def test_curve_summary_preserves_ok_status_for_a_depth_that_ran_before_a_later_failure(self):
+        # Regression test: a "partial" series (deeper depth failed/timed out)
+        # must not blank out the depth(s) that actually succeeded - see
+        # write_curve_summary()'s row_status logic and depth0_throughput()'s
+        # reliance on a per-row "ok" status.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            jsonl_path = tmp_path / "run.jsonl"
+            jsonl_path.write_text(
+                json.dumps({"n_depth": 0, "n_prompt": 2048, "n_gen": 0, "avg_ts": 123.4, "avg_ns": 1}) + "\n",
+                encoding="utf-8",
+            )
+            result = RunResult(
+                model="example.gguf", series="prefill", config=BenchConfig(),
+                status="partial", return_code=1, jsonl_path=jsonl_path,
+                stderr_path=tmp_path / "run.stderr.log", command=[],
+                depths_run=(0,), depths_skipped=(8192,),
+                stop_reason="depth 8192 timed out",
+            )
+            summary_path = tmp_path / "curve_summary.csv"
+            row_count = write_curve_summary([result], summary_path)
+
+            self.assertEqual(row_count, 1)
+            curve = read_curve(summary_path)
+            self.assertEqual(curve[0]["status"], "ok")
+            self.assertEqual(depth0_throughput(curve, "prefill"), 123.4)
+
+    def test_read_curve_normalizes_non_finite_avg_ts_to_null(self):
+        # Regression test: json.dumps emits the bare (invalid-JSON) tokens
+        # NaN/Infinity for non-finite floats; read_curve must normalize
+        # these to None before they reach results.json.
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = Path(tmp) / "curve_summary.csv"
+            summary_path.write_text(
+                "series,n_depth,avg_ts,status\nprefill,0,nan,ok\ngeneration,0,inf,ok\n",
+                encoding="utf-8",
+            )
+            curve = read_curve(summary_path)
+            self.assertIsNone(curve[0]["avg_ts"])
+            self.assertIsNone(curve[1]["avg_ts"])
+            # Python's json module accepts NaN/Infinity as a non-standard
+            # extension on both dump and load, so round-tripping alone
+            # wouldn't catch a regression here - assert the invalid tokens
+            # never appear in the serialized text.
+            serialized = json.dumps(curve)
+            self.assertNotIn("NaN", serialized)
+            self.assertNotIn("Infinity", serialized)
 
 
 if __name__ == "__main__":

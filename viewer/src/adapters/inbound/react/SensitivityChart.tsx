@@ -8,8 +8,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { TuningStage } from "./types";
-import { sensitivityBars } from "./sensitivity";
+import type { TuningStage } from "../../../domain/results";
+import { sensitivityBars } from "../../../domain/sensitivity";
 
 interface Props {
   tuningLog: TuningStage[];

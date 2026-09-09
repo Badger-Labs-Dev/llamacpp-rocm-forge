@@ -1,5 +1,5 @@
-import type { FinalConfig, TuningStage } from "./types";
-import { sensitivityBars } from "./sensitivity";
+import type { FinalConfig, TuningStage } from "../../../domain/results";
+import { sensitivityBars } from "../../../domain/sensitivity";
 
 interface Props {
   config: FinalConfig;

@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { RunEntry } from "./types";
+import type { RunEntry } from "../../../domain/results";
 
 interface Props {
   runs: RunEntry[];

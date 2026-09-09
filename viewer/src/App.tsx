@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
-import type { ResultsFile } from "./types";
-import { VersionChart } from "./VersionChart";
-import { SensitivityChart } from "./SensitivityChart";
-import { RecommendationCard } from "./RecommendationCard";
-import { MoeOffloadChart } from "./MoeOffloadChart";
+import type { ResultsFile } from "./domain/results";
+import { HttpResultsCatalog } from "./adapters/outbound/httpResultsCatalog";
+import { defaultModelSlug, defaultRunId, selectModel, selectRun } from "./application/selection";
+import { VersionChart } from "./adapters/inbound/react/VersionChart";
+import { SensitivityChart } from "./adapters/inbound/react/SensitivityChart";
+import { RecommendationCard } from "./adapters/inbound/react/RecommendationCard";
+import { MoeOffloadChart } from "./adapters/inbound/react/MoeOffloadChart";
 
 function App() {
   const [data, setData] = useState<ResultsFile | null>(null);
@@ -13,31 +15,26 @@ function App() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${import.meta.env.BASE_URL}results.json`, { cache: "no-store" })
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((json: ResultsFile) => {
-        setData(json);
-        if (json.models.length > 0) setSelectedSlug(json.models[0].model_slug);
+    const catalog = new HttpResultsCatalog(`${import.meta.env.BASE_URL}results.json`);
+    catalog.load()
+      .then((dataset) => {
+        setData(dataset);
+        setSelectedSlug(defaultModelSlug(dataset));
       })
       .catch((err) => setError(String(err)));
   }, []);
 
   const selectedModel = useMemo(
-    () => data?.models.find((m) => m.model_slug === selectedSlug) ?? null,
+    () => selectModel(data, selectedSlug),
     [data, selectedSlug],
   );
 
   useEffect(() => {
-    if (selectedModel && selectedModel.runs.length > 0) {
-      setSelectedRunId(selectedModel.runs[selectedModel.runs.length - 1].run_id);
-    }
+    setSelectedRunId(defaultRunId(selectedModel));
   }, [selectedModel]);
 
   const selectedRun = useMemo(
-    () => selectedModel?.runs.find((r) => r.run_id === selectedRunId) ?? null,
+    () => selectRun(selectedModel, selectedRunId),
     [selectedModel, selectedRunId],
   );
 
