@@ -28,12 +28,6 @@ uv run benchmark/run_bench.py \
 
 A bare repository reference opens an interactive picker only when stdin is a terminal. In a script or cron job, supply an exact URI, tag, or local file path.
 
-List a repository's GGUF files without launching a benchmark:
-
-```bash
-uv run benchmark/hf_models.py list unsloth/Qwen3.6-35B-A3B-GGUF
-```
-
 ## Cache and Docker mounts
 
 Hugging Face stores a downloaded file at `snapshots/<hash>/model.gguf`, where that apparent GGUF file is normally a symlink to `blobs/<content-hash>`. The blob has no `.gguf` extension and sits outside the snapshot directory.

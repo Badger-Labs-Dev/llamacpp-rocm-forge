@@ -19,12 +19,6 @@ llama.cpp's `--n-cpu-moe N` / `-ncmoe N` moves MoE feed-forward weights from the
 
 `expert_count > 1` identifies an MoE. `block_count` is the upper bound for `-ncmoe`: a 40-layer model accepts values from `0` to `40`. Dense models lack `expert_count`, so the MoE stage is skipped.
 
-Inspect a file yourself:
-
-```bash
-uv run benchmark/gguf_info.py ~/models/your-model.gguf
-```
-
 ## Which command to use
 
 `--full-sweep` automatically uses **quick mode** for a detected MoE model:

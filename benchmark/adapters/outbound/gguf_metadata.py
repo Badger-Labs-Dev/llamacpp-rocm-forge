@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Read key metadata out of a GGUF file's header without any GGUF library.
 
 GGUF stores model metadata as a flat key-value section at the start of the
@@ -6,17 +5,15 @@ file (before tensor data), so this only needs struct.unpack over the first
 few KB - no llama.cpp Python bindings, no `gguf` pip package, no loading the
 whole (possibly tens-of-GB) file.
 
-Usage:
-    ./gguf_info.py model.gguf
-    ./gguf_info.py model.gguf --json
+Library-only: this has no CLI. The only consumer is
+adapters/outbound/model_resolution.py (context_length, for deriving
+benchmark depths) and run_bench.py (moe_params, for detecting/sizing a
+MoE model's --n-cpu-moe sweep).
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import struct
-import sys
 from pathlib import Path
 
 # GGUF value type codes -> (struct format char, size in bytes). Types 8
@@ -120,52 +117,3 @@ def moe_params(metadata: dict) -> dict | None:
         "expert_used_count": expert_used_count,
         "block_count": block_count,
     }
-
-
-def summarize(metadata: dict) -> dict:
-    return {
-        "architecture": metadata.get("general.architecture"),
-        "name": metadata.get("general.name"),
-        "quantization_version": metadata.get("general.quantization_version"),
-        "context_length": context_length(metadata),
-        "moe": moe_params(metadata),
-        "tensor_count": metadata.get("tensor_count"),
-    }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("model", type=Path, help="Path to a .gguf file")
-    parser.add_argument("--json", action="store_true", help="Print full raw metadata as JSON")
-    args = parser.parse_args()
-
-    if not args.model.is_file():
-        sys.exit(f"Not a file: {args.model}")
-
-    metadata = read_gguf_metadata(args.model)
-
-    if args.json:
-        print(json.dumps(metadata, indent=2, sort_keys=True, default=str))
-        return
-
-    summary = summarize(metadata)
-    print(f"file:              {args.model}")
-    print(f"architecture:      {summary['architecture']}")
-    print(f"name:              {summary['name']}")
-    print(f"tensor_count:      {summary['tensor_count']}")
-    if summary["context_length"] is not None:
-        print(f"context_length:    {summary['context_length']}")
-    else:
-        print("context_length:    NOT FOUND (no '*.context_length' key in this file)")
-    if summary["moe"] is not None:
-        moe = summary["moe"]
-        print(f"moe:               expert_count={moe['expert_count']} "
-              f"expert_used_count={moe['expert_used_count']} "
-              f"block_count={moe['block_count']} "
-              f"(-n-cpu-moe valid range: 0..{moe['block_count']})")
-    else:
-        print("moe:               not a MoE model (no '*.expert_count' key, or <= 1)")
-
-
-if __name__ == "__main__":
-    main()

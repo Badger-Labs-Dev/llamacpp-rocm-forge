@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Resolve Hugging Face model references (URIs, repo IDs, ollama-style tags)
 into local file paths, downloading via the Hugging Face cache if needed.
 
@@ -9,7 +8,6 @@ with hf CLI" / "Use this model" buttons:
     org/repo                            -> no filename given: list available
                                             .gguf files in the repo and let
                                             the user pick one interactively
-                                            (or --file / non-interactive)
     org/repo:QUANT                      -> ollama-style tag; matches a
                                             *_QUANT.gguf file case-insensitively
     org/repo/file.gguf                  -> same as hf:// form, prefix optional
@@ -19,20 +17,13 @@ cache-aware: an already-cached file returns instantly with no network
 call, a missing one downloads and populates the cache. Nothing here
 bypasses or duplicates that cache.
 
-Usage (as a library, from run_bench.py):
-    from hf_models import resolve_hf_reference
-    local_path = resolve_hf_reference("hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf")
-
-Usage (standalone, to just list or download):
-    ./hf_models.py list unsloth/Qwen3.6-35B-A3B-GGUF
-    ./hf_models.py resolve hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
-    ./hf_models.py resolve unsloth/Qwen3.6-35B-A3B-GGUF          # interactive picker
-    ./hf_models.py resolve unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL
+Library-only: this has no CLI. The only consumer is
+adapters/outbound/model_resolution.py (resolve_model_reference()), reached
+from run_bench.py's --model argument.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 import sys
 
@@ -208,37 +199,3 @@ def resolve_hf_reference(reference: str, quiet: bool = False) -> str:
     if not quiet:
         print(f"  -> {local_path}", file=sys.stderr)
     return local_path
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    list_p = sub.add_parser("list", help="List .gguf files in a repo")
-    list_p.add_argument("repo_id", help="e.g. unsloth/Qwen3.6-35B-A3B-GGUF")
-
-    resolve_p = sub.add_parser("resolve", help="Resolve a reference to a local path, downloading if needed")
-    resolve_p.add_argument("reference", help="hf:// URI, org/repo, org/repo:quant, or org/repo/file.gguf")
-
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    try:
-        if args.command == "list":
-            files = list_gguf_files(args.repo_id)
-            if not files:
-                print(f"No .gguf files found in {args.repo_id}")
-                return
-            for f in files:
-                print(f"{f['path']:60s} {format_size(f['size_bytes'])}")
-        elif args.command == "resolve":
-            path = resolve_hf_reference(args.reference)
-            print(path)
-    except HfReferenceError as e:
-        sys.exit(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    main()

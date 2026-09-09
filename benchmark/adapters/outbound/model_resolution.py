@@ -12,14 +12,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from gguf_info import context_length, read_gguf_metadata
-import hf_models
+from adapters.outbound.gguf_metadata import context_length, read_gguf_metadata
+from adapters.outbound import huggingface_models as hf_models
 
 # Common context-window sizes seen across model releases (powers of two, plus
 # the odd-but-common 24576/49152 seen in some Qwen configs). Depths are
 # derived from whichever of these fit under a model's trained
 # *.context_length, rather than a single fixed list applied to every model
-# regardless of what it actually supports - see gguf_info.py.
+# regardless of what it actually supports - see gguf_metadata.py.
 COMMON_CONTEXT_SIZES = (
     2048, 4096, 8192, 16384, 24576, 32768, 49152, 65536, 98304, 131072, 262144,
 )

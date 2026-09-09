@@ -20,15 +20,7 @@ For an MoE model, full-sweep uses fully CPU-offloaded experts while tuning and f
 
 ## Context depths come from the GGUF
 
-The driver reads `<architecture>.context_length` from the GGUF header and tests the common context sizes that fit under that trained limit, plus depth 0. A model should not be benchmarked beyond its trained context window just because llama.cpp accepts the number.
-
-Inspect the metadata directly:
-
-```bash
-uv run benchmark/gguf_info.py ~/models/your-model.gguf
-```
-
-If the context length is absent, the driver falls back to its legacy depth list and prints a warning. The chosen `depths` and `context_length` are saved in the manifest.
+The driver reads `<architecture>.context_length` from the GGUF header and tests the common context sizes that fit under that trained limit, plus depth 0. A model should not be benchmarked beyond its trained context window just because llama.cpp accepts the number. If the context length is absent, the driver falls back to its legacy depth list and prints a warning. The chosen `depths` and `context_length` are saved in the manifest.
 
 ## OOM and timeout behavior
 

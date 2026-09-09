@@ -9,7 +9,7 @@ output closely enough to stay comparable.
 
 Depths (llama-bench's "-d", how full the KV cache is before the timed run)
 are derived per model from its GGUF *.context_length metadata (see
-gguf_info.py): every entry in COMMON_CONTEXT_SIZES that fits under the
+gguf_metadata.py): every entry in COMMON_CONTEXT_SIZES that fits under the
 model's trained context length gets tested, plus depth 0. Testing past a
 model's trained context produces throughput numbers but not meaningful
 ones, since RoPE positions past that point were never seen in training.
@@ -75,7 +75,6 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from gguf_info import moe_params, read_gguf_metadata
 from adapters.outbound.campaign_store import load_jsonl_rows, mean_ts
 from adapters.outbound.docker_llama_bench import (
     LlamaBenchProbe,
@@ -87,6 +86,7 @@ from adapters.outbound.docker_runner import (
     new_container_name,
     run_probe,
 )
+from adapters.outbound.gguf_metadata import moe_params, read_gguf_metadata
 from adapters.outbound.model_resolution import (
     COMMON_CONTEXT_SIZES,
     LEGACY_FIXED_DEPTHS,
@@ -106,7 +106,7 @@ from domain.planning import (
     thorough_max_probes_per_depth,
 )
 from adapters.outbound import rocm_environment as environment_info
-import hf_models
+from adapters.outbound import huggingface_models as hf_models
 from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
 from domain.progress import ProbeProgress
 
