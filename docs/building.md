@@ -6,6 +6,13 @@ The Dockerfile (`docker/Dockerfile.rocm-10.0.0.ubuntu26`) doesn't pin a llama.cp
 
 This repo is scoped to building/tagging images and running the benchmark itself — not to running `llama-server` as a persistent service. That belongs in `homelab-llm-router`; see "Running the server" below.
 
+## Where this build comes from
+
+`docker/Dockerfile.rocm-10.0.0.ubuntu26` is not a from-scratch build; it adapts two upstream sources, which are also credited in the file's own header comment:
+
+- **ROCm packages**: pulled directly from AMD's official apt repo, per [AMD's ROCm 10.0.0 install docs](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=radeon&w=compute&gpu=amd-radeon-ai-pro-r9700&gfx=gfx1201&os=ubuntu&ubuntu-ver=26.04&i=pkgman) for this exact GPU/OS/ROCm combination ("Package manager (apt)" install method). AMD hasn't published a ROCm 10.0.0 `rocm/dev-ubuntu-26.04:...-complete` container image yet, so instead of `FROM`-ing one (what upstream llama.cpp's own Dockerfile does), STAGE 1 starts from plain `ubuntu:26.04` and installs the ROCm apt repo/keyring/packages by hand, following those docs.
+- **llama.cpp build structure**: the build/runtime-split staging (a `builder` stage that compiles, then several slim final stages that each `COPY --from=builder` just one binary) mirrors [llama.cpp's own official ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (`.devops/rocm.Dockerfile` in that repo) — same `GGML_HIP=ON`/`AMDGPU_TARGETS`/`GGML_BACKEND_DL=ON` cmake flags, same `light`/`server`/(their `full`, our `bench`) split pattern. Adapted rather than copied wholesale: their base image is `rocm/dev-ubuntu-*-complete` (not available for ROCm 10.0.0/Ubuntu 26.04 yet, per above), and their `ROCM_DOCKER_ARCH` builds a fat multi-GPU binary for every gfx target at once, where this Dockerfile currently builds one target (`gfx1201`) at a time via `AMDGPU_TARGETS=${GFX_TARGET}`.
+
 ## Build targets
 
 The Dockerfile has three final targets, each producing a single-binary image:
