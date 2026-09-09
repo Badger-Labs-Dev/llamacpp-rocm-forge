@@ -10,30 +10,28 @@ every COMMON_CONTEXT_SIZES entry that fits under the trained context
 length is tested, plus depth 0. Falls back to LEGACY_FIXED_DEPTHS if
 context_length can't be read.
 
-Tuning modes (pick one; --full-sweep is the general recommendation):
+Model type (dense vs MoE) is auto-detected from GGUF *.expert_count -
+there is nothing to configure. Two modes, no in-between:
 
-  (default)     Fixed config: ubatch=2048, batch=2048, ctk/ctv=f16, fa=auto.
-  --ubatch N    Fixed config as above but with this ubatch.
-  --calibrate   Legacy: sweep only UBATCH_CANDIDATES at depth 0. Kept for
-                backward compatibility with earlier results directories.
-  --full-sweep  Staged auto-tune across ubatch, batch, and KV cache dtype
-                (f16/q8_0/q4_0) - see application/auto_tune.py.
+  (default)  Staged auto-tune across ubatch, batch, and KV cache dtype
+             (application/auto_tune.py). For a detected MoE model, also
+             binary-searches the exact --n-cpu-moe boundary per depth
+             (application/moe_sweep.py's thorough sweep). This is the
+             slow, thorough, "give me the real numbers" mode.
+  --quick    Skips tuning: fixed ubatch=2048, batch=2048, ctk/ctv=f16,
+             flash-attn=auto. For a detected MoE model, sweeps five
+             evenly-spaced --n-cpu-moe candidates instead of the exact
+             boundary search. Fast path for "does this run at all,
+             roughly how fast".
 
-Flash attention is always "auto", not swept - llama.cpp's own default
-already picks the fused kernel when it applies, and forcing it on/off
-doesn't help on architectures where it can't apply anyway. Quantized KV
-cache (ctk/ctv != f16) requires FA on regardless; BenchConfig.validate()
-enforces that.
-
-For MoE models (detected from GGUF *.expert_count; a no-op for dense
-models), --sweep-moe-offload sweeps --n-cpu-moe across depths to find
-the minimum offload that fits and how throughput drops as more gets
-offloaded - see application/moe_sweep.py. --sweep-moe-offload-thorough
-binary-searches the exact boundary per depth instead of using fixed
-evenly-spaced candidates.
+Flash attention is always "auto" in both modes, never swept -
+llama.cpp's own default already picks the fused kernel when it applies,
+and forcing it on/off doesn't help on architectures where it can't
+apply anyway.
 
 Usage:
-    ./run_bench.py --model /models/foo.gguf --full-sweep
+    uv run run_bench.py --model hf://org/repo/model.gguf
+    uv run run_bench.py --model hf://org/repo/model.gguf --quick
 """
 
 from __future__ import annotations
@@ -55,12 +53,10 @@ from adapters.outbound.model_resolution import (
 )
 from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
 from application.auto_tune import (
-    UBATCH_CANDIDATES,
     auto_tune,
     probe_depths,
     valid_batch_grid_count,
 )
-from application.calibration import pick_best_ubatch
 from application.moe_sweep import (
     MOE_EXTRA_SAMPLE_COUNT,
     MOE_QUICK_CANDIDATE_COUNT,
@@ -104,18 +100,13 @@ def _install_cleanup_handlers() -> None:
 
 def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: dict | None) -> tuple[int, str]:
     """CLI adapter around the domain campaign-budget calculation."""
-    should_sweep_moe = moe is not None and (
-        args.full_sweep or args.sweep_moe_offload or args.sweep_moe_offload_thorough
-    )
     budget = campaign_budget(
         depth_count=len(depths),
-        full_sweep=args.full_sweep,
-        calibrate=args.calibrate,
+        quick=args.quick,
         valid_batch_pairs=valid_batch_grid_count(),
         kv_type_count=len(KV_CACHE_TYPES),
         tuning_depth_count=len(probe_depths(depths)),
-        moe_block_count=(moe or {}).get("block_count") if should_sweep_moe else None,
-        thorough_moe=args.sweep_moe_offload_thorough,
+        moe_block_count=(moe or {}).get("block_count"),
         quick_candidate_count=MOE_QUICK_CANDIDATE_COUNT,
         thorough_extra_sample_count=MOE_EXTRA_SAMPLE_COUNT,
     )
@@ -131,6 +122,11 @@ def parse_args() -> argparse.Namespace:
                               "resolved via the local HF cache, downloading if not already "
                               "present. org/repo with multiple .gguf files prompts an "
                               "interactive picker.")
+    parser.add_argument("--quick", action="store_true",
+                         help="Fast path: skip auto-tuning (fixed ubatch=2048, batch=2048, "
+                              "ctk/ctv=f16, flash-attn=auto) and, for a detected MoE model, "
+                              "sweep the quick 5-point --n-cpu-moe curve instead of the exact "
+                              "boundary bisection")
     parser.add_argument("--image", default="r9700-llm-bench:rocm-7.2.4", help="Docker image to benchmark")
     parser.add_argument("--device", default="ROCm0", help="llama-bench -dev target (default: ROCm0, the R9700)")
     parser.add_argument("--gpu-gid", action="append", default=[],
@@ -141,35 +137,9 @@ def parse_args() -> argparse.Namespace:
                               "<results-root>/<model-slug>/<run-id>/ (default: ./results)")
     parser.add_argument("--force", action="store_true",
                          help="Overwrite an existing run directory instead of refusing")
-    parser.add_argument("--calibrate", action="store_true",
-                         help="Legacy: sweep only ubatch at depth 0, other params fixed at defaults")
-    parser.add_argument("--full-sweep", action="store_true",
-                         help="Staged auto-tune across ubatch, batch, and KV cache dtype; "
-                              "also runs the quick MoE offload sweep when GGUF metadata "
-                              "identifies the model as MoE")
-    parser.add_argument("--sweep-moe-offload", action="store_true",
-                         help="MoE models only (auto-detected from GGUF metadata, no-op for dense "
-                              "models): also sweep --n-cpu-moe across depths, evenly-spaced "
-                              "candidates. Answers 'what's the minimum --n-cpu-moe that fits at "
-                              "each context depth, and how much does throughput drop as I offload "
-                              "more'. Runs after --full-sweep's ubatch/batch/KV stages (or after "
-                              "the fixed/--calibrate config if --full-sweep isn't also given), "
-                              "using that config as the base.")
-    parser.add_argument("--sweep-moe-offload-thorough", action="store_true",
-                         help="Like --sweep-moe-offload, but binary-searches for the exact "
-                              "min_ncmoe_that_fits per depth instead of testing fixed evenly-spaced "
-                              "candidates - more precise, similar or lower cost thanks to reusing "
-                              "each depth's boundary as a starting point for the next.")
     parser.add_argument("--max-depth", type=int, default=None,
                          help="Cap derived depths at this value even if the model supports more "
                               "(useful for a quick smoke test on a long-context model)")
-    parser.add_argument("--ubatch", type=int, default=None, help="Fixed ubatch (ignored with --calibrate/--full-sweep)")
-    parser.add_argument("--batch", type=int, default=None, help="Fixed batch size (ignored with --full-sweep)")
-    parser.add_argument("--ctk", default=None, help="Fixed KV cache key dtype, e.g. f16/q8_0/q4_0 (ignored with --full-sweep)")
-    parser.add_argument("--ctv", default=None, help="Fixed KV cache value dtype (ignored with --full-sweep)")
-    parser.add_argument("--flash-attn", choices=("auto", "on", "off"), default=None,
-                         help="Fixed flash-attn mode (ignored with --full-sweep, which always "
-                              "uses 'auto' - see BenchConfig.flash_attn)")
     parser.add_argument("--cooldown", type=int, default=COOLDOWN_SECONDS)
     return parser.parse_args()
 
@@ -250,6 +220,9 @@ def main() -> None:
         except (OSError, ValueError):
             gguf_metadata = {}
         moe = moe_params(gguf_metadata)
+        if moe is not None:
+            print(f"  MoE model detected: expert_count={moe['expert_count']} "
+                  f"expert_used_count={moe['expert_used_count']}", flush=True)
         max_probes, progress_detail = planned_probe_count(args, depths, moe)
         progress = ProgressTracker(
             ProbeProgress(total_probes=max_probes, expected_gap_seconds=DEPTH_COOLDOWN_SECONDS),
@@ -260,20 +233,15 @@ def main() -> None:
             image=args.image, gpu_gids=gpu_gids, device=args.device, model=model,
             results_root=args.results_root, run_id=run_id, env=env,
             config=CampaignConfig(
-                full_sweep=args.full_sweep, calibrate=args.calibrate,
-                sweep_moe_offload=args.sweep_moe_offload,
-                sweep_moe_offload_thorough=args.sweep_moe_offload_thorough,
-                max_depth=args.max_depth, ubatch=args.ubatch, batch=args.batch,
-                ctk=args.ctk, ctv=args.ctv, flash_attn=args.flash_attn,
+                quick=args.quick, max_depth=args.max_depth,
                 cooldown=args.cooldown, force=args.force,
             ),
             gguf_metadata=gguf_metadata, moe=moe, depths=depths, max_ctx=max_ctx,
             progress=progress,
             bench_config_cls=BenchConfig, run_one=run_one, auto_tune=auto_tune,
-            pick_best_ubatch=pick_best_ubatch,
             sweep_moe_offload_quick=sweep_moe_offload_quick,
             sweep_moe_offload_thorough=sweep_moe_offload_thorough,
-            model_slug=slug, ubatch_candidates=UBATCH_CANDIDATES,
+            model_slug=slug,
             prefill_tokens=PREFILL_TOKENS, generation_tokens=GENERATION_TOKENS,
             repetitions=REPETITIONS,
         )

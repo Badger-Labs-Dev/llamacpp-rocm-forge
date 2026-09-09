@@ -76,12 +76,7 @@ class ProgressTrackerTests(unittest.TestCase):
         self.assertEqual(snapshot.remaining, 0)
 
     def test_plans_full_thorough_moe_sweep_as_a_conservative_upper_bound(self):
-        args = argparse.Namespace(
-            full_sweep=True,
-            calibrate=False,
-            sweep_moe_offload=False,
-            sweep_moe_offload_thorough=True,
-        )
+        args = argparse.Namespace(quick=False)
 
         total, detail = planned_probe_count(args, depths=(0, 2048, 6144), moe={"block_count": 40})
 

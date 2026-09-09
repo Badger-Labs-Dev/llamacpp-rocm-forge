@@ -5,8 +5,8 @@ file the static viewer (viewer/) reads.
 For each (model, run_id) pair, reads metadata.json (summary + environment),
 campaign_manifest.json (tuning_log - the per-stage sensitivity data), and
 curve_summary.csv (throughput vs depth for the winning config). Only
---full-sweep runs have a tuning_log; other modes still contribute their
-version-over-time datapoint but no sensitivity data.
+the default (auto-tune) mode has a tuning_log; --quick runs still
+contribute their version-over-time datapoint but no sensitivity data.
 
 Usage:
     ./generate_viewer_data.py [--results-root results] [--output ../viewer/public/results.json]

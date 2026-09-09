@@ -5,25 +5,21 @@
 ## Accepted forms
 
 ```bash
-# The exact URI from “Download with hf CLI”
+# The exact URI from "Download with hf CLI"
 uv run benchmark/run_bench.py \
-  --model "hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
-  --full-sweep
+  --model "hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
 
-# The quant tag from “Use this model → Ollama”; omit hf.co/
+# The quant tag from "Use this model → Ollama"; omit hf.co/
 uv run benchmark/run_bench.py \
-  --model "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL" \
-  --full-sweep
+  --model "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL"
 
 # A repository with no selected GGUF; interactive terminal picker
 uv run benchmark/run_bench.py \
-  --model "unsloth/Qwen3.6-35B-A3B-GGUF" \
-  --full-sweep
+  --model "unsloth/Qwen3.6-35B-A3B-GGUF"
 
 # A local path
 uv run benchmark/run_bench.py \
-  --model ~/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
-  --full-sweep
+  --model ~/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
 ```
 
 A bare repository reference opens an interactive picker only when stdin is a terminal. In a script or cron job, supply an exact URI, tag, or local file path.

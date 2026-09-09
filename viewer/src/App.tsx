@@ -61,8 +61,8 @@ function App() {
     return (
       <div className="page">
         <p>
-          No benchmark results found. Run a{" "}
-          <code>--full-sweep</code> benchmark, then{" "}
+          No benchmark results found. Run{" "}
+          <code>uv run benchmark/run_bench.py --model ...</code>, then{" "}
           <code>benchmark/generate_viewer_data.py</code>.
         </p>
       </div>

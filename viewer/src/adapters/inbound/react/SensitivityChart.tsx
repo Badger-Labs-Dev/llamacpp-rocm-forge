@@ -27,17 +27,17 @@ function colorFor(swingPct: number): string {
 
 /** Tornado chart: one horizontal bar per swept parameter, length = the
  * throughput swing between that parameter's best and worst tested
- * candidate (from --full-sweep's tuning_log), sorted largest-first. */
+ * candidate (from the default auto-tune mode's tuning_log), sorted
+ * largest-first. */
 export function SensitivityChart({ tuningLog }: Props) {
   const bars = sensitivityBars(tuningLog);
 
   if (bars.length === 0) {
     return (
       <p className="empty-note">
-        No sensitivity data for this run - only <code>--full-sweep</code>{" "}
-        runs record per-parameter tuning scores. Fixed-config or{" "}
-        <code>--calibrate</code> runs only produce the version-over-time
-        data point above.
+        No sensitivity data for this run - only the default (auto-tune){" "}
+        mode records per-parameter tuning scores. <code>--quick</code> runs
+        only produce the version-over-time data point above.
       </p>
     );
   }

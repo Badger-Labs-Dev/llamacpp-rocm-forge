@@ -37,18 +37,18 @@ from adapters.outbound.campaign_store import (
 
 @dataclass(frozen=True)
 class CampaignConfig:
-    """Tuning-mode selection and fixed-config overrides for one campaign -
-    a narrower, non-argparse-coupled view of the CLI flags main() parses."""
-    full_sweep: bool = False
-    calibrate: bool = False
-    sweep_moe_offload: bool = False
-    sweep_moe_offload_thorough: bool = False
+    """Tuning-mode selection for one campaign - a narrower, non-argparse-
+    coupled view of the CLI flags main() parses.
+
+    quick=False (the default) always runs the full staged auto-tune
+    (application/auto_tune.py) and, for a detected MoE model, the
+    thorough --n-cpu-moe bisection (application/moe_sweep.py). quick=True
+    skips tuning for a fixed config and, for MoE, runs the cheap 5-point
+    sweep instead of the bisection. There is no third mode and no way to
+    mix-and-match stages - see run_bench.py's module docstring.
+    """
+    quick: bool = False
     max_depth: int | None = None
-    ubatch: int | None = None
-    batch: int | None = None
-    ctk: str | None = None
-    ctv: str | None = None
-    flash_attn: str | None = None
     cooldown: int = 10
     force: bool = False
 
@@ -82,26 +82,31 @@ def run_model_campaign(
     bench_config_cls,
     run_one,
     auto_tune,
-    pick_best_ubatch,
     sweep_moe_offload_quick,
     sweep_moe_offload_thorough,
     model_slug: str,
-    ubatch_candidates: tuple[int, ...],
     prefill_tokens: int,
     generation_tokens: int,
     repetitions: int,
 ) -> CampaignOutcome:
-    """Run tuning (or a fixed config), the optional MoE sweep, and the
-    final prefill/generation curves for one model; write all campaign
-    artifacts (curve_summary.csv, campaign_manifest.json, metadata.json,
-    campaign.finished/partial/failed marker) to results_root/model_slug/run_id/.
+    """Run tuning (or, in --quick mode, a fixed config), the MoE offload
+    sweep for a detected MoE model (thorough bisection, or the cheap
+    quick sweep in --quick mode), and the final prefill/generation
+    curves for one model; write all campaign artifacts (curve_summary.csv,
+    campaign_manifest.json, metadata.json, campaign.finished/partial/failed
+    marker) to results_root/model_slug/run_id/.
     """
     model_results_dir = results_root / model_slug / run_id
 
     results: list = []
     tuning_log: list[dict] = []
 
-    if config.full_sweep:
+    if config.quick:
+        bench_config = bench_config_cls(
+            ubatch=2048, batch=2048, ctk="f16", ctv="f16", flash_attn="auto",
+        ).validate()
+        print(f"  --quick: using fixed config {bench_config.tag()}", flush=True)
+    else:
         tuning_ncmoe = (moe or {}).get("block_count") or 0
         if tuning_ncmoe:
             print(f"  MoE model: auto-tuning with --n-cpu-moe={tuning_ncmoe} "
@@ -111,48 +116,16 @@ def run_model_campaign(
             depths=depths, results_dir=model_results_dir, cooldown=config.cooldown,
             log=tuning_log, n_cpu_moe=tuning_ncmoe, progress=progress,
         )
-        print(f"  full-sweep winner: {bench_config.tag()}", flush=True)
-    elif config.calibrate:
-        print("  calibration (legacy): sweeping ubatch candidates on prefill series", flush=True)
-        for ubatch in ubatch_candidates:
-            cfg = bench_config_cls(ubatch=ubatch)
-            print(f"  [prefill calibration {cfg.tag()}]", flush=True)
-            result = run_one(
-                image=image, gpu_gids=gpu_gids, host_model_path=model,
-                series="prefill", config=cfg, device=device,
-                depths=depths, results_dir=model_results_dir, progress=progress,
-            )
-            results.append(result)
-            print(f"    {result.status} (rc={result.return_code})", flush=True)
-            time.sleep(config.cooldown)
-        chosen_ubatch = pick_best_ubatch(model_results_dir, str(model), list(ubatch_candidates))
-        bench_config = bench_config_cls(ubatch=chosen_ubatch)
-        print(f"  calibration winner: ub={chosen_ubatch}", flush=True)
-    else:
-        bench_config = bench_config_cls(
-            ubatch=config.ubatch or 2048,
-            batch=config.batch or 2048,
-            ctk=config.ctk or "f16",
-            ctv=config.ctv or config.ctk or "f16",
-            flash_attn=config.flash_attn or "auto",
-        ).validate()
-        print(f"  using fixed config: {bench_config.tag()}", flush=True)
+        print(f"  auto-tune winner: {bench_config.tag()}", flush=True)
 
     moe_offload_result = None
-    # `--full-sweep` is the recommended/default tuning path, so a
-    # detected MoE gets the cheap five-point curve automatically.
-    # Thorough is explicit because it does more probes; it takes
-    # precedence if both flags happen to be supplied.
-    run_moe_sweep = moe is not None and (
-        config.full_sweep or config.sweep_moe_offload or config.sweep_moe_offload_thorough
-    )
-    if moe is not None and run_moe_sweep:
+    if moe is not None:
         block_count = moe["block_count"]
         if not block_count:
             print("  WARNING: MoE model but no *.block_count in GGUF metadata; "
                   "skipping --n-cpu-moe sweep", flush=True)
         else:
-            thorough = config.sweep_moe_offload_thorough
+            thorough = not config.quick
             print(f"  MoE model detected: expert_count={moe['expert_count']} "
                   f"expert_used_count={moe['expert_used_count']} block_count={block_count}", flush=True)
             print(f"  sweeping --n-cpu-moe ({'thorough/binary-search' if thorough else 'quick/fixed-candidates'})", flush=True)
@@ -165,11 +138,6 @@ def run_model_campaign(
             moe_offload_result["expert_count"] = moe["expert_count"]
             moe_offload_result["expert_used_count"] = moe["expert_used_count"]
             moe_offload_result["block_count"] = block_count
-    elif moe is not None:
-        print(f"  MoE model detected (expert_count={moe['expert_count']}) but "
-              f"--sweep-moe-offload not given; skipping the --n-cpu-moe sweep. Every "
-              f"expert stays resident in VRAM regardless of expert_used_count - see "
-              f"README's MoE section.", flush=True)
 
     for series in ("prefill", "generation"):
         print(f"  [{series} {bench_config.tag()}]", flush=True)
@@ -186,7 +154,7 @@ def run_model_campaign(
     rows = write_curve_summary(results, summary_path)
     failed = [r for r in results if r.status == "failed"]
     partial = [r for r in results if r.status == "partial"]
-    mode = "full-sweep" if config.full_sweep else ("calibrate-legacy" if config.calibrate else "fixed")
+    mode = "quick" if config.quick else "full-sweep"
     completed_at = datetime.now(timezone.utc).isoformat()
 
     manifest = build_campaign_manifest(

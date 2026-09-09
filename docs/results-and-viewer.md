@@ -49,7 +49,7 @@ npm run build
 3. **Recommended settings** shows the ordinary final configuration with the sensitivity notes that explain which choices moved performance enough to care about.
 4. **MoE expert offload** appears only when `moe_offload_curve` exists. It plots throughput by context depth for each sampled `-ncmoe` value and lists the smallest recorded value that fits at each depth.
 
-Fixed-config and legacy calibration runs still supply version-over-time data, but do not have enough alternatives to produce a sensitivity chart.
+`--quick` runs still supply version-over-time data, but do not have enough alternatives to produce a sensitivity chart.
 
 ## Publishing benchmark data
 

@@ -178,7 +178,7 @@ class MainCharacterizationTests(unittest.TestCase):
             argv = [
                 "run_bench.py", "--model", str(model_path),
                 "--results-root", str(results_root), "--gpu-gid", "999",
-                "--cooldown", "0",
+                "--cooldown", "0", "--quick",
             ]
 
             def fake_run(cmd, stdout=None, stderr=None, timeout=None, capture_output=None):
@@ -215,7 +215,7 @@ class MainCharacterizationTests(unittest.TestCase):
                     "generation_tok_s_mean", "status",
                 },
             )
-            self.assertEqual(manifest["mode"], "fixed")
+            self.assertEqual(manifest["mode"], "quick")
             self.assertEqual(len(manifest["runs"]), 2)  # prefill + generation
             self.assertEqual(
                 set(manifest.keys()),

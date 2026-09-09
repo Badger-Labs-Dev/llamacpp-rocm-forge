@@ -11,13 +11,11 @@ class BenchmarkApplicationTests(unittest.TestCase):
     def test_budget_preserves_worst_case_and_work_parts(self):
         budget = campaign_budget(
             depth_count=3,
-            full_sweep=True,
-            calibrate=False,
+            quick=False,
             valid_batch_pairs=13,
             kv_type_count=3,
             tuning_depth_count=2,
             moe_block_count=40,
-            thorough_moe=True,
         )
         self.assertEqual(budget.total, 61)
         self.assertEqual(budget.parts[0], ("tuning", 19))

@@ -18,37 +18,28 @@ Every command below uses `uv run`; activating `.venv` manually is unnecessary.
 
 ### 2. Run a model
 
-The recommended path is a full sweep. It tunes KV-cache dtype and the ubatch/batch pair, then benchmarks the selected configuration across the model's supported context depths.
+Model type (dense vs MoE) is auto-detected. By default, the driver runs the full staged auto-tune (KV-cache dtype, then the ubatch/batch pair) and, for a detected MoE model, the exact `--n-cpu-moe` boundary bisection, then benchmarks the winning configuration across the model's supported context depths:
 
 ```bash
 uv run benchmark/run_bench.py \
-  --model "hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf" \
-  --full-sweep
+  --model "hf://unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
 ```
 
 `--model` accepts a normal GGUF path, the `hf://...` URI from Hugging Face's download button, an Ollama-style `org/repo:QUANT` reference, or a bare `org/repo` that opens an interactive GGUF picker. Details: [Hugging Face model references](docs/huggingface-models.md).
 
-For a fixed configuration, skip tuning:
+Add `--quick` for a fast pass: fixed config (no auto-tuning), and for MoE, five evenly-spaced `--n-cpu-moe` candidates instead of the exact boundary search:
 
 ```bash
 uv run benchmark/run_bench.py \
   --model ~/models/your-model.gguf \
-  --ubatch 1024 --batch 2048 --ctk q8_0 --ctv q8_0
+  --quick
 ```
 
 Use `--max-depth N` to cap a long-context model for a smoke test. Repeat `--model` to benchmark several models in one invocation.
 
 ## MoE models
 
-A name such as `35B-A3B` means about 3B parameters are active per token; it does not mean the model occupies 3B parameters' worth of VRAM. For a detected mixture-of-experts GGUF, `--full-sweep` automatically runs a quick `--n-cpu-moe` curve alongside the ordinary sweep.
-
-Use the thorough mode when the exact offload boundary matters:
-
-```bash
-uv run benchmark/run_bench.py \
-  --model "hf://org/repo/model.gguf" \
-  --full-sweep --sweep-moe-offload-thorough
-```
+A name such as `35B-A3B` means about 3B parameters are active per token; it does not mean the model occupies 3B parameters' worth of VRAM. For a detected mixture-of-experts GGUF, the driver automatically also sweeps `--n-cpu-moe` - the exact boundary bisection by default, or the quick 5-point curve with `--quick`.
 
 See [MoE expert offload](docs/moe-offload.md) for the memory model, quick-versus-thorough trade-off, and how to read the results.
 

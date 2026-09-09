@@ -4,9 +4,9 @@
 
 The run ID is version-based: `rocm<version>_llamacpp<build-number>`. It intentionally does not include a date. The date is stored inside the JSON metadata; the directory identity answers the question this project is meant to track: how did this model behave under this ROCm and llama.cpp build?
 
-## What `--full-sweep` tunes
+## What the default (auto-tune) mode tunes
 
-A full sweep is staged rather than exhaustive:
+By default the driver stages a search rather than testing exhaustively:
 
 1. KV-cache dtype: `f16`, `q8_0`, and `q4_0`, at the shallowest and deepest selected depths.
 2. A valid ubatch × batch grid, using the selected KV dtype at depth 0.
@@ -14,9 +14,11 @@ A full sweep is staged rather than exhaustive:
 
 A full independent grid would be 4 ubatch values × 4 batch values × 3 KV dtypes, before multiplying by depths and repetitions. The staged search is cheaper and records every tested score in `campaign_manifest.json`'s `tuning_log`, so a later viewer can show what mattered and how much.
 
-Flash attention stays at llama.cpp's `-fa auto`. That lets the backend select the fused path only when the model and kernel support it. Quantized KV cache types still force flash attention on when llama.cpp requires it.
+Flash attention stays at llama.cpp's `-fa auto` in both modes. That lets the backend select the fused path only when the model and kernel support it. Quantized KV cache types still force flash attention on when llama.cpp requires it.
 
-For an MoE model, full-sweep uses fully CPU-offloaded experts while tuning and for its ordinary full-depth curve. This keeps an unrelated expert-weight allocation from making a deep KV-cache probe fail before the dedicated MoE sweep can map the actual context-versus-offload trade-off. See [MoE expert offload](moe-offload.md).
+For an MoE model, auto-tune uses fully CPU-offloaded experts while tuning and for its ordinary full-depth curve. This keeps an unrelated expert-weight allocation from making a deep KV-cache probe fail before the dedicated MoE sweep can map the actual context-versus-offload trade-off. See [MoE expert offload](moe-offload.md).
+
+`--quick` skips all of the above: a fixed `ubatch=2048, batch=2048, ctk/ctv=f16, fa=auto` config, benchmarked directly. Use it for a fast pass when you don't need the tuned numbers.
 
 ## Context depths come from the GGUF
 
@@ -52,14 +54,3 @@ docker ps --filter name=r9700-llm-bench- --format '{{.Names}}'
 docker kill $(docker ps --filter name=r9700-llm-bench- -q)
 rocm-smi --showmeminfo vram
 ```
-
-## Reading a completed curve from the terminal
-
-`benchmark/recommend_settings.py` can inspect a `curve_summary.csv` or a run directory:
-
-```bash
-uv run benchmark/recommend_settings.py \
-  results/qwen2-5-0-5b-instruct-q4-k-m/rocm7.2.4_llamacpp9974
-```
-
-It compares the fastest depth-0 result, the best average across the curve, and the best deepest-context result. When those disagree, it recommends the mean-curve winner and states the disagreement. Use `--json` for machine-readable output.

@@ -21,28 +21,19 @@ llama.cpp's `--n-cpu-moe N` / `-ncmoe N` moves MoE feed-forward weights from the
 
 ## Which command to use
 
-`--full-sweep` automatically uses **quick mode** for a detected MoE model:
+Model type is auto-detected - there is nothing to configure. By default, a detected MoE model automatically gets the thorough exact-boundary search:
 
 ```bash
 uv run benchmark/run_bench.py \
-  --model "hf://org/repo/model.gguf" \
-  --full-sweep
+  --model "hf://org/repo/model.gguf"
 ```
 
-Run the quick MoE curve without the normal tuning stages when you already have a base configuration:
+`--quick` runs the quick fixed-candidates curve instead, alongside the fixed (untuned) base config:
 
 ```bash
 uv run benchmark/run_bench.py \
   --model "hf://org/repo/model.gguf" \
-  --sweep-moe-offload
-```
-
-Use the exact-boundary search when the context target is important enough to justify additional probes:
-
-```bash
-uv run benchmark/run_bench.py \
-  --model "hf://org/repo/model.gguf" \
-  --full-sweep --sweep-moe-offload-thorough
+  --quick
 ```
 
 ## Quick mode

@@ -49,29 +49,25 @@ def thorough_max_probes_per_depth(block_count: int, sample_count: int = 3) -> in
 def campaign_budget(
     *,
     depth_count: int,
-    full_sweep: bool,
-    calibrate: bool,
+    quick: bool,
     valid_batch_pairs: int,
     kv_type_count: int,
     tuning_depth_count: int,
     moe_block_count: int | None,
-    thorough_moe: bool,
     quick_candidate_count: int = 5,
     thorough_extra_sample_count: int = 3,
 ) -> ProbeBudget:
     parts: list[tuple[str, int]] = []
-    if full_sweep:
+    if not quick:
         parts.append(("tuning", kv_type_count * tuning_depth_count + valid_batch_pairs))
-    elif calibrate:
-        parts.append(("calibration", 4 * depth_count))
 
     if moe_block_count:
         count = (
-            depth_count * thorough_max_probes_per_depth(moe_block_count, thorough_extra_sample_count)
-            if thorough_moe
-            else depth_count * len(quick_moe_candidates(moe_block_count, quick_candidate_count))
+            depth_count * len(quick_moe_candidates(moe_block_count, quick_candidate_count))
+            if quick
+            else depth_count * thorough_max_probes_per_depth(moe_block_count, thorough_extra_sample_count)
         )
-        parts.append((("thorough MoE" if thorough_moe else "quick MoE"), count))
+        parts.append((("quick MoE" if quick else "thorough MoE"), count))
 
     parts.append(("final curves", 2 * depth_count))
     return ProbeBudget(total=sum(count for _, count in parts), parts=tuple(parts))
