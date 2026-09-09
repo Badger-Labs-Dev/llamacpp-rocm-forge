@@ -85,12 +85,50 @@ def context_length(metadata: dict) -> int | None:
     return None
 
 
+def moe_params(metadata: dict) -> dict | None:
+    """Find MoE parameters from a model's metadata, if it's a MoE model.
+
+    Like context_length(), the key is namespaced by architecture (e.g.
+    qwen35moe.expert_count) - scan for the suffix. Presence of
+    *.expert_count > 0 is what actually distinguishes a MoE model from a
+    dense one; expert_used_count is the "used" part of names like "A3B"
+    (active experts per token - the compute cost, not the memory cost:
+    every expert still has to be resident in VRAM, since the router can
+    route to any of them on any given token). block_count is the number
+    of transformer layers, which is what --n-cpu-moe/-ncmoe actually
+    counts - it moves the MoE feed-forward weights of the first N layers
+    to CPU RAM, valid range 0..block_count.
+
+    Returns None for dense models (no expert_count, or expert_count <= 1).
+    """
+    expert_count = None
+    expert_used_count = None
+    block_count = None
+    for key, value in metadata.items():
+        if key.endswith(".expert_count") and isinstance(value, int):
+            expert_count = value
+        elif key.endswith(".expert_used_count") and isinstance(value, int):
+            expert_used_count = value
+        elif key.endswith(".block_count") and isinstance(value, int):
+            block_count = value
+
+    if not expert_count or expert_count <= 1:
+        return None
+
+    return {
+        "expert_count": expert_count,
+        "expert_used_count": expert_used_count,
+        "block_count": block_count,
+    }
+
+
 def summarize(metadata: dict) -> dict:
     return {
         "architecture": metadata.get("general.architecture"),
         "name": metadata.get("general.name"),
         "quantization_version": metadata.get("general.quantization_version"),
         "context_length": context_length(metadata),
+        "moe": moe_params(metadata),
         "tensor_count": metadata.get("tensor_count"),
     }
 
@@ -119,6 +157,14 @@ def main() -> None:
         print(f"context_length:    {summary['context_length']}")
     else:
         print("context_length:    NOT FOUND (no '*.context_length' key in this file)")
+    if summary["moe"] is not None:
+        moe = summary["moe"]
+        print(f"moe:               expert_count={moe['expert_count']} "
+              f"expert_used_count={moe['expert_used_count']} "
+              f"block_count={moe['block_count']} "
+              f"(-n-cpu-moe valid range: 0..{moe['block_count']})")
+    else:
+        print("moe:               not a MoE model (no '*.expert_count' key, or <= 1)")
 
 
 if __name__ == "__main__":

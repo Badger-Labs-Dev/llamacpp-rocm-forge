@@ -82,6 +82,7 @@ def build_run_entry(model_dir: Path, run_dir: Path) -> dict | None:
         "generation_depth0_ts": depth0_throughput(curve, "generation"),
         "curve": curve,
         "tuning_log": manifest.get("tuning_log", []),
+        "moe_offload_curve": manifest.get("moe_offload_curve"),
     }
 
 

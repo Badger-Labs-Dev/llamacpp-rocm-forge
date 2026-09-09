@@ -158,3 +158,23 @@ code {
   border-radius: 4px;
   font-size: 0.85em;
 }
+
+.moe-boundary-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  font-size: 0.85rem;
+}
+
+.moe-boundary-table th,
+.moe-boundary-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.moe-boundary-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.8rem;
+}

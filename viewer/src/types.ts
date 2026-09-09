@@ -19,6 +19,31 @@ export interface FinalConfig {
   flash_attn: string; // "auto" | "on" | "off" - always "auto" as of the
     // change that stopped sweeping this (llama.cpp's own default, lets
     // it decide per model/backend whether the fused kernel applies)
+  n_cpu_moe: number; // llama-bench's -ncmoe. A dense or fixed run normally
+    // stays at 0. A full MoE sweep tunes its shared settings with all experts
+    // offloaded so deep probes remain viable; MoeOffloadCurve supplies the
+    // context-specific minimum rather than a single global recommendation.
+}
+
+export interface MoeOffloadPoint {
+  n_cpu_moe: number;
+  status: "ok" | "failed";
+  avg_ts: number | null;
+}
+
+export interface MoeOffloadDepth {
+  depth: number;
+  min_ncmoe_that_fits: number | null; // null = nothing fit, even fully offloaded
+  results: MoeOffloadPoint[];
+}
+
+export interface MoeOffloadCurve {
+  mode: "quick" | "thorough";
+  candidates_tested?: number[]; // quick mode only
+  expert_count: number;
+  expert_used_count: number | null;
+  block_count: number;
+  by_depth: MoeOffloadDepth[];
 }
 
 export interface Environment {
@@ -43,6 +68,7 @@ export interface RunEntry {
   generation_depth0_ts: number | null;
   curve: CurveRow[];
   tuning_log: TuningStage[];
+  moe_offload_curve: MoeOffloadCurve | null;
 }
 
 export interface ModelEntry {

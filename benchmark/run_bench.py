@@ -46,6 +46,17 @@ llama.cpp requires flash attention ON whenever KV cache is quantized
 invalid combinations - "auto" alone isn't a safe default there, since
 auto isn't guaranteed to actually enable FA.
 
+For MoE models (detected from GGUF *.expert_count metadata; a no-op for
+dense models), --sweep-moe-offload additionally sweeps --n-cpu-moe
+across the model's derived depths, answering "what's the minimum
+--n-cpu-moe that fits at this context depth, and how much does
+throughput drop as more gets offloaded to CPU". Every expert has to be
+resident in VRAM regardless of how few are actually active per token
+(the router can pick any of them per-token) - see moe_params() and
+sweep_moe_offload_quick()/_thorough() for the actual mechanics.
+--sweep-moe-offload-thorough binary-searches the exact fitting boundary
+per depth instead of testing fixed evenly-spaced candidates.
+
 Note: llama-bench has no flag for speculative decoding / multi-token
 prediction (MTP) - that's a llama-server/llama-cli feature (-md draft
 model), not something this benchmark tool measures.
@@ -60,6 +71,7 @@ import argparse
 import atexit
 import csv
 import json
+import math
 import re
 import signal
 import subprocess
@@ -70,9 +82,10 @@ from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from gguf_info import context_length, read_gguf_metadata
+from gguf_info import context_length, moe_params, read_gguf_metadata
 import environment_info
 import hf_models
+from progress_tracker import ProgressTracker
 
 # Common context-window sizes seen across model releases (powers of two, plus
 # the odd-but-common 24576/49152 seen in some Qwen configs). Depths are
@@ -118,9 +131,16 @@ class BenchConfig:
         # We stopped sweeping flash-attn on/off: forcing "on" doesn't help
         # on architectures where FA can't apply anyway, and "auto" is
         # already llama.cpp's own considered default as of this build.
+    n_cpu_moe: int = 0  # llama-bench's -ncmoe/--n-cpu-moe: moves the MoE
+        # feed-forward (expert) weights of the first N layers to CPU RAM,
+        # keeping attention/shared weights on GPU. 0 (default) is a no-op
+        # even for dense models - only meaningful for MoE models, where
+        # every expert must otherwise be resident in VRAM regardless of
+        # how few are active per token (see sweep_moe_offload() below).
 
     def tag(self) -> str:
-        return f"ub{self.ubatch}_b{self.batch}_kv{self.ctk}-{self.ctv}_fa{self.flash_attn}"
+        base = f"ub{self.ubatch}_b{self.batch}_kv{self.ctk}-{self.ctv}_fa{self.flash_attn}"
+        return f"{base}_ncmoe{self.n_cpu_moe}" if self.n_cpu_moe else base
 
     def validate(self) -> "BenchConfig":
         """Force flash-attn on if the KV cache dtype requires it - "auto"
@@ -249,6 +269,7 @@ def build_llama_bench_command(
         "-ub", str(config.ubatch),
         "-ngl", str(GPU_LAYERS),
         "-fa", config.flash_attn,
+        "-ncmoe", str(config.n_cpu_moe),
         "-mmp", "0",
         "-ctk", config.ctk,
         "-ctv", config.ctv,
@@ -274,6 +295,7 @@ def run_one(
     depths: tuple[int, ...],
     results_dir: Path,
     subdir: str | None = None,
+    progress: ProgressTracker | None = None,
 ) -> RunResult:
     """Run llama-bench once per depth, ascending (shallowest first).
 
@@ -336,6 +358,8 @@ def run_one(
             ]
             last_command = docker_cmd
             print(f"    $ {' '.join(docker_cmd)}", flush=True)
+            if progress is not None:
+                progress.before_probe(f"{series} depth={depth} {config.tag()}")
 
             stderr_f.write(f"\n===== depth={depth} =====\n")
             stderr_f.flush()
@@ -349,6 +373,7 @@ def run_one(
             # an explicit `docker kill` a timed-out depth would leak VRAM
             # exactly like an interrupted run would.
             _ACTIVE_CONTAINERS.add(container_name)
+            probe_started_at = time.monotonic()
             try:
                 proc = subprocess.run(
                     docker_cmd, stdout=jsonl_f, stderr=stderr_f,
@@ -363,6 +388,8 @@ def run_one(
                     print(f"    FAILED at depth={depth} (rc={proc.returncode}); "
                           f"skipping remaining {len(sorted_depths) - i - 1} larger depth(s)",
                           flush=True)
+                    if progress is not None:
+                        progress.prune(len(sorted_depths) - i - 1, "this series failed at a shallower depth")
                 else:
                     depths_run.append(depth)
             except subprocess.TimeoutExpired:
@@ -378,8 +405,12 @@ def run_one(
                 print(f"    TIMEOUT at depth={depth} after {DEPTH_TIMEOUT_SECONDS}s "
                       f"(container killed); skipping remaining "
                       f"{len(sorted_depths) - i - 1} larger depth(s)", flush=True)
+                if progress is not None:
+                    progress.prune(len(sorted_depths) - i - 1, "this series timed out at a shallower depth")
             finally:
                 _ACTIVE_CONTAINERS.discard(container_name)
+                if progress is not None:
+                    progress.finish_probe(elapsed_seconds=time.monotonic() - probe_started_at)
 
             if stop_reason is None and i < len(sorted_depths) - 1:
                 time.sleep(DEPTH_COOLDOWN_SECONDS)
@@ -454,12 +485,13 @@ def probe_config(
     device: str,
     depths: tuple[int, ...],
     results_dir: Path,
+    progress: ProgressTracker | None = None,
 ) -> float:
     """Run a quick prefill-only probe of one config; return mean avg_ts."""
     result = run_one(
         image=image, gpu_gids=gpu_gids, host_model_path=model,
         series="prefill", config=config.validate(), device=device,
-        depths=depths, results_dir=results_dir, subdir="tuning",
+        depths=depths, results_dir=results_dir, subdir="tuning", progress=progress,
     )
     if result.status != "ok":
         return -1.0
@@ -476,16 +508,16 @@ def auto_tune(
     results_dir: Path,
     cooldown: int,
     log: list[dict],
+    n_cpu_moe: int = 0,
+    progress: ProgressTracker | None = None,
 ) -> BenchConfig:
     """Staged (coordinate-descent) auto-tune: KV cache dtype, then a
     ubatch x batch grid. Each stage probes at 2 depths (shallowest +
     deepest) rather than the full curve, and carries its winner into the
-    next stage. Flash-attn is not swept - always "auto", letting
-    llama.cpp decide per model/backend whether the fused kernel applies
-    (see BenchConfig.flash_attn) - so this is a 2-stage search, not 3.
-    Full grid search (ubatch x batch x KV) would be 4x4x3=48 configs at
-    full depth x 3 reps - infeasible; this keeps total probe count in the
-    dozens instead.
+    next stage. For a MoE full-sweep, n_cpu_moe is conservatively set to
+    block_count so the fixed-parameter stages can evaluate their intended
+    knobs without an unrelated high-context MoE OOM; the separate MoE
+    curve later measures every candidate with the winning base config.
     """
     probe_d = probe_depths(depths)
     print(f"  auto-tune: probing at depths {list(probe_d)}", flush=True)
@@ -495,9 +527,9 @@ def auto_tune(
     print("  [stage 1/2] KV cache dtype", flush=True)
     kv_scores = {}
     for kv in KV_CACHE_TYPES:
-        cfg = BenchConfig(ctk=kv, ctv=kv).validate()
+        cfg = BenchConfig(ctk=kv, ctv=kv, n_cpu_moe=n_cpu_moe).validate()
         score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
-                              device=device, depths=probe_d, results_dir=results_dir)
+                             device=device, depths=probe_d, results_dir=results_dir, progress=progress)
         kv_scores[kv] = score
         print(f"    kv={kv}: mean_ts={score:.1f}", flush=True)
         time.sleep(cooldown)
@@ -515,9 +547,10 @@ def auto_tune(
         for b in BATCH_CANDIDATES:
             if ub > b:
                 continue  # llama.cpp requires ubatch <= batch
-            cfg = BenchConfig(ubatch=ub, batch=b, ctk=best_kv, ctv=best_kv).validate()
+            cfg = BenchConfig(ubatch=ub, batch=b, ctk=best_kv, ctv=best_kv,
+                              n_cpu_moe=n_cpu_moe).validate()
             score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
-                                  device=device, depths=(0,), results_dir=results_dir)
+                                 device=device, depths=(0,), results_dir=results_dir, progress=progress)
             combo_key = f"ub{ub}_b{b}"
             grid_scores[combo_key] = score
             grid_combo_lookup[combo_key] = (ub, b)
@@ -528,7 +561,283 @@ def auto_tune(
     log.append({"stage": "ubatch_batch_grid", "scores": grid_scores, "winner": best_combo})
     print(f"  stage 2 winner: ubatch={best_ub} batch={best_b}", flush=True)
 
-    return BenchConfig(ubatch=best_ub, batch=best_b, ctk=best_kv, ctv=best_kv).validate()
+    return BenchConfig(ubatch=best_ub, batch=best_b, ctk=best_kv, ctv=best_kv,
+                       n_cpu_moe=n_cpu_moe).validate()
+
+
+MOE_QUICK_CANDIDATE_COUNT = 5  # evenly spaced --n-cpu-moe candidates for quick mode
+MOE_EXTRA_SAMPLE_COUNT = 3     # extra throughput samples above the found boundary,
+                                # for the thorough mode's "how hard does tps dive" curve
+
+
+def valid_batch_grid_count() -> int:
+    return sum(ub <= batch for ub in UBATCH_CANDIDATES for batch in BATCH_CANDIDATES)
+
+
+def thorough_extra_candidates(boundary: int, block_count: int) -> tuple[int, ...]:
+    """Spread additional throughput samples above a fitting boundary."""
+    remaining = block_count - boundary
+    if remaining <= 0 or MOE_EXTRA_SAMPLE_COUNT <= 0:
+        return ()
+    step = max(1, remaining // MOE_EXTRA_SAMPLE_COUNT)
+    return tuple(range(boundary + step, block_count, step))
+
+
+def thorough_max_extra_samples(block_count: int) -> int:
+    """Largest number of extra throughput probes the current spacing can emit."""
+    return max(
+        (len(thorough_extra_candidates(boundary, block_count)) for boundary in range(block_count + 1)),
+        default=0,
+    )
+
+
+def thorough_max_probes_per_depth(block_count: int) -> int:
+    """Conservative per-depth bound for bisection plus throughput samples."""
+    return 2 + math.ceil(math.log2(block_count + 1)) + thorough_max_extra_samples(block_count)
+
+
+def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: dict | None) -> tuple[int, str]:
+    """Return one model's maximum Docker invocations before dynamic pruning."""
+    depth_count = len(depths)
+    parts: list[tuple[str, int]] = []
+    if args.full_sweep:
+        parts.append(("tuning", len(KV_CACHE_TYPES) * len(probe_depths(depths)) + valid_batch_grid_count()))
+    elif args.calibrate:
+        parts.append(("calibration", len(UBATCH_CANDIDATES) * depth_count))
+
+    should_sweep_moe = moe is not None and (
+        args.full_sweep or args.sweep_moe_offload or args.sweep_moe_offload_thorough
+    )
+    block_count = moe.get("block_count") if moe is not None else None
+    if should_sweep_moe and block_count:
+        if args.sweep_moe_offload_thorough:
+            count = depth_count * thorough_max_probes_per_depth(block_count)
+            parts.append(("thorough MoE", count))
+        else:
+            count = depth_count * len(moe_offload_candidates(block_count))
+            parts.append(("quick MoE", count))
+
+    parts.append(("final curves", 2 * depth_count))
+    total = sum(count for _, count in parts)
+    detail = ", ".join(f"{count} {name}" for name, count in parts)
+    return total, detail
+
+
+def moe_offload_candidates(block_count: int, n: int = MOE_QUICK_CANDIDATE_COUNT) -> tuple[int, ...]:
+    """Evenly spaced --n-cpu-moe candidates across [0, block_count], quick mode.
+
+    n_cpu_moe=0 (nothing offloaded, fastest, most likely to OOM) is always
+    included, as is block_count (everything offloaded, slowest, most
+    likely to fit) - the two ends of the tradeoff.
+    """
+    if block_count <= 0:
+        return (0,)
+    if n <= 1 or block_count < n - 1:
+        return tuple(sorted(set(range(0, block_count + 1))))
+    step = block_count / (n - 1)
+    return tuple(sorted(set(round(i * step) for i in range(n))))
+
+
+def probe_moe_offload(
+    *,
+    image: str,
+    gpu_gids: list[str],
+    model: Path,
+    base_config: BenchConfig,
+    n_cpu_moe: int,
+    device: str,
+    depth: int,
+    results_dir: Path,
+    progress: ProgressTracker | None = None,
+) -> tuple[bool, float]:
+    """Run one prefill probe at a specific (depth, n_cpu_moe); return
+    (fits, mean_avg_ts). fits=False on any failure/timeout - VRAM
+    exhaustion at a high depth can hang rather than error cleanly (see
+    run_one's docstring), so this relies on the same per-depth timeout."""
+    cfg = replace(base_config, n_cpu_moe=n_cpu_moe).validate()
+    result = run_one(
+        image=image, gpu_gids=gpu_gids, host_model_path=model,
+        series="prefill", config=cfg, device=device,
+        depths=(depth,), results_dir=results_dir, subdir="moe-tuning", progress=progress,
+    )
+    if result.status != "ok":
+        return False, -1.0
+    return True, mean_ts(result.jsonl_path)
+
+
+def sweep_moe_offload_quick(
+    *,
+    image: str,
+    gpu_gids: list[str],
+    model: Path,
+    base_config: BenchConfig,
+    device: str,
+    depths: tuple[int, ...],
+    block_count: int,
+    results_dir: Path,
+    cooldown: int,
+    progress: ProgressTracker | None = None,
+) -> dict:
+    """Quick mode: fixed evenly-spaced --n-cpu-moe candidates, tested at
+    every depth. Simple and fast, but the boundary between fitting and
+    not-fitting could fall between two candidates rather than exactly at
+    one - see sweep_moe_offload_thorough() for the precise version."""
+    candidates = moe_offload_candidates(block_count)
+    by_depth = []
+    for depth_index, depth in enumerate(depths):
+        point_results = []
+        min_ncmoe_that_fits = None
+        for ncmoe in candidates:
+            fits, ts = probe_moe_offload(
+                image=image, gpu_gids=gpu_gids, model=model, base_config=base_config,
+                n_cpu_moe=ncmoe, device=device, depth=depth, results_dir=results_dir,
+                progress=progress,
+            )
+            point_results.append({
+                "n_cpu_moe": ncmoe,
+                "status": "ok" if fits else "failed",
+                "avg_ts": ts if fits else None,
+            })
+            if fits and min_ncmoe_that_fits is None:
+                min_ncmoe_that_fits = ncmoe
+            print(f"    depth={depth} ncmoe={ncmoe}: "
+                  f"{'ok, ts=' + format(ts, '.1f') if fits else 'FAILED'}", flush=True)
+            time.sleep(cooldown)
+        by_depth.append({
+            "depth": depth,
+            "min_ncmoe_that_fits": min_ncmoe_that_fits,
+            "results": point_results,
+        })
+        if min_ncmoe_that_fits is None:
+            print(f"    depth={depth}: nothing fit even at ncmoe={block_count} "
+                  f"(fully offloaded); deeper depths won't fit either, stopping", flush=True)
+            if progress is not None:
+                progress.prune(
+                    (len(depths) - depth_index - 1) * len(candidates),
+                    "fully offloaded experts could not fit at this depth",
+                )
+            break
+
+    return {
+        "mode": "quick",
+        "candidates_tested": list(candidates),
+        "by_depth": by_depth,
+    }
+
+
+def sweep_moe_offload_thorough(
+    *,
+    image: str,
+    gpu_gids: list[str],
+    model: Path,
+    base_config: BenchConfig,
+    device: str,
+    depths: tuple[int, ...],
+    block_count: int,
+    results_dir: Path,
+    cooldown: int,
+    progress: ProgressTracker | None = None,
+) -> dict:
+    """Thorough mode: binary search for the exact min_ncmoe_that_fits per
+    depth, then a few extra throughput samples above that boundary for
+    the "how hard does throughput dive as I offload more" curve.
+
+    Relies on two monotonicity assumptions, both physically motivated
+    rather than just convenient: (1) for a fixed depth, success in
+    n_cpu_moe is monotonic - more layers offloaded to CPU only frees
+    VRAM, never uses more, so once a value fits, every larger value
+    fits too; (2) across depths, the fitting boundary is non-decreasing
+    - a deeper context needs a larger KV cache, which only adds VRAM
+    pressure, so a value that already failed at a shallower depth will
+    also fail at any deeper one. (2) means each depth's search can start
+    from the previous depth's boundary as a known-failing lower bound,
+    instead of re-searching [0, block_count] from scratch - and once the
+    boundary stabilizes across a run of depths (common - shallow depth
+    increases often don't need more headroom), it costs just one probe
+    per depth to confirm rather than a full search.
+    """
+    by_depth = []
+    known_fail_floor = -1  # -1 means "no known-failing value yet" (0 might fit)
+    per_depth_budget = thorough_max_probes_per_depth(block_count)
+
+    for depth_index, depth in enumerate(depths):
+        tested: dict[int, tuple[bool, float]] = {}
+
+        def probe(ncmoe: int) -> bool:
+            if ncmoe in tested:
+                return tested[ncmoe][0]
+            fits, ts = probe_moe_offload(
+                image=image, gpu_gids=gpu_gids, model=model, base_config=base_config,
+                n_cpu_moe=ncmoe, device=device, depth=depth, results_dir=results_dir,
+                progress=progress,
+            )
+            tested[ncmoe] = (fits, ts)
+            print(f"    depth={depth} ncmoe={ncmoe}: "
+                  f"{'ok, ts=' + format(ts, '.1f') if fits else 'FAILED'}", flush=True)
+            time.sleep(cooldown)
+            return fits
+
+        # Fast path: does the previous depth's boundary still fit? If so
+        # it's still optimal (monotonicity (2) rules out anything smaller
+        # working now, and it demonstrably still works) - no search needed.
+        lo = max(known_fail_floor, -1)
+        starting_hint = lo + 1
+        if starting_hint <= block_count and probe(starting_hint):
+            boundary = starting_hint
+        else:
+            # Binary search in (lo, block_count]. Verify the top end
+            # first - if even fully offloaded doesn't fit, this depth is
+            # infeasible outright, regardless of n_cpu_moe.
+            if not probe(block_count):
+                by_depth.append({
+                    "depth": depth,
+                    "min_ncmoe_that_fits": None,
+                    "results": [{"n_cpu_moe": k, "status": "ok" if v[0] else "failed",
+                                  "avg_ts": v[1] if v[0] else None} for k, v in sorted(tested.items())],
+                })
+                print(f"    depth={depth}: nothing fits even at ncmoe={block_count} "
+                      f"(fully offloaded); deeper depths won't fit either, stopping", flush=True)
+                if progress is not None:
+                    progress.prune(
+                        (per_depth_budget - len(tested))
+                        + (len(depths) - depth_index - 1) * per_depth_budget,
+                        "fully offloaded experts could not fit at this depth",
+                    )
+                break
+            hi = block_count
+            search_lo = max(lo, starting_hint)
+            while hi - search_lo > 1:
+                mid = (search_lo + hi) // 2
+                if probe(mid):
+                    hi = mid
+                else:
+                    search_lo = mid
+            boundary = hi
+
+        # Extra throughput samples above the boundary, for the dive
+        # curve - bisection alone only samples near the boundary, not
+        # spread across the range above it.
+        if boundary < block_count and MOE_EXTRA_SAMPLE_COUNT > 0:
+            for ncmoe in thorough_extra_candidates(boundary, block_count):
+                probe(ncmoe)
+
+        known_fail_floor = boundary - 1
+        by_depth.append({
+            "depth": depth,
+            "min_ncmoe_that_fits": boundary,
+            "results": [{"n_cpu_moe": k, "status": "ok" if v[0] else "failed",
+                          "avg_ts": v[1] if v[0] else None} for k, v in sorted(tested.items())],
+        })
+        if progress is not None:
+            progress.prune(
+                per_depth_budget - len(tested),
+                "thorough search resolved this depth below its conservative bound",
+            )
+
+    return {
+        "mode": "thorough",
+        "by_depth": by_depth,
+    }
 
 
 def pick_best_ubatch(results_dir: Path, model: str, candidates: list[int]) -> int:
@@ -552,7 +861,7 @@ def pick_best_ubatch(results_dir: Path, model: str, candidates: list[int]) -> in
 
 def write_curve_summary(results: list[RunResult], summary_path: Path) -> int:
     fieldnames = [
-        "model", "series", "ubatch", "batch", "ctk", "ctv", "flash_attn",
+        "model", "series", "ubatch", "batch", "ctk", "ctv", "flash_attn", "n_cpu_moe",
         "n_depth", "n_prompt", "n_gen", "avg_ts", "avg_ns", "status",
     ]
     row_count = 0
@@ -570,6 +879,7 @@ def write_curve_summary(results: list[RunResult], summary_path: Path) -> int:
                     "ctk": result.config.ctk,
                     "ctv": result.config.ctv,
                     "flash_attn": result.config.flash_attn,
+                    "n_cpu_moe": result.config.n_cpu_moe,
                     "n_depth": row.get("n_depth"),
                     "n_prompt": row.get("n_prompt"),
                     "n_gen": row.get("n_gen"),
@@ -603,7 +913,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibrate", action="store_true",
                          help="Legacy: sweep only ubatch at depth 0, other params fixed at defaults")
     parser.add_argument("--full-sweep", action="store_true",
-                         help="Staged auto-tune across ubatch, batch, KV cache dtype, and flash-attn")
+                         help="Staged auto-tune across ubatch, batch, and KV cache dtype; "
+                              "also runs the quick MoE offload sweep when GGUF metadata "
+                              "identifies the model as MoE")
+    parser.add_argument("--sweep-moe-offload", action="store_true",
+                         help="MoE models only (auto-detected from GGUF metadata, no-op for dense "
+                              "models): also sweep --n-cpu-moe across depths, evenly-spaced "
+                              "candidates. Answers 'what's the minimum --n-cpu-moe that fits at "
+                              "each context depth, and how much does throughput drop as I offload "
+                              "more'. Runs after --full-sweep's ubatch/batch/KV stages (or after "
+                              "the fixed/--calibrate config if --full-sweep isn't also given), "
+                              "using that config as the base.")
+    parser.add_argument("--sweep-moe-offload-thorough", action="store_true",
+                         help="Like --sweep-moe-offload, but binary-searches for the exact "
+                              "min_ncmoe_that_fits per depth instead of testing fixed evenly-spaced "
+                              "candidates - more precise, similar or lower cost thanks to reusing "
+                              "each depth's boundary as a starting point for the next.")
     parser.add_argument("--max-depth", type=int, default=None,
                          help="Cap derived depths at this value even if the model supports more "
                               "(useful for a quick smoke test on a long-context model)")
@@ -695,15 +1020,26 @@ def main() -> None:
             gguf_metadata = read_gguf_metadata(model)
         except (OSError, ValueError):
             gguf_metadata = {}
+        moe = moe_params(gguf_metadata)
+        max_probes, progress_detail = planned_probe_count(args, depths, moe)
+        progress = ProgressTracker(
+            total_probes=max_probes,
+            expected_gap_seconds=DEPTH_COOLDOWN_SECONDS,
+        )
+        progress.start(detail=progress_detail)
 
         results: list[RunResult] = []
         tuning_log: list[dict] = []
 
         if args.full_sweep:
+            tuning_ncmoe = (moe or {}).get("block_count") or 0
+            if tuning_ncmoe:
+                print(f"  MoE model: auto-tuning with --n-cpu-moe={tuning_ncmoe} "
+                      "so KV/ubatch/batch probes do not OOM before the MoE curve runs", flush=True)
             config = auto_tune(
                 image=args.image, gpu_gids=gpu_gids, model=model, device=args.device,
                 depths=depths, results_dir=model_results_dir, cooldown=args.cooldown,
-                log=tuning_log,
+                log=tuning_log, n_cpu_moe=tuning_ncmoe, progress=progress,
             )
             print(f"  full-sweep winner: {config.tag()}", flush=True)
         elif args.calibrate:
@@ -714,7 +1050,7 @@ def main() -> None:
                 result = run_one(
                     image=args.image, gpu_gids=gpu_gids, host_model_path=model,
                     series="prefill", config=cfg, device=args.device,
-                    depths=depths, results_dir=model_results_dir,
+                    depths=depths, results_dir=model_results_dir, progress=progress,
                 )
                 results.append(result)
                 print(f"    {result.status} (rc={result.return_code})", flush=True)
@@ -732,12 +1068,45 @@ def main() -> None:
             ).validate()
             print(f"  using fixed config: {config.tag()}", flush=True)
 
+        moe_offload_result = None
+        # `--full-sweep` is the recommended/default tuning path, so a
+        # detected MoE gets the cheap five-point curve automatically.
+        # Thorough is explicit because it does more probes; it takes
+        # precedence if both flags happen to be supplied.
+        run_moe_sweep = moe is not None and (
+            args.full_sweep or args.sweep_moe_offload or args.sweep_moe_offload_thorough
+        )
+        if moe is not None and run_moe_sweep:
+            block_count = moe["block_count"]
+            if not block_count:
+                print("  WARNING: MoE model but no *.block_count in GGUF metadata; "
+                      "skipping --n-cpu-moe sweep", flush=True)
+            else:
+                thorough = args.sweep_moe_offload_thorough
+                print(f"  MoE model detected: expert_count={moe['expert_count']} "
+                      f"expert_used_count={moe['expert_used_count']} block_count={block_count}", flush=True)
+                print(f"  sweeping --n-cpu-moe ({'thorough/binary-search' if thorough else 'quick/fixed-candidates'})", flush=True)
+                sweep_fn = sweep_moe_offload_thorough if thorough else sweep_moe_offload_quick
+                moe_offload_result = sweep_fn(
+                    image=args.image, gpu_gids=gpu_gids, model=model, base_config=config,
+                    device=args.device, depths=depths, block_count=block_count,
+                    results_dir=model_results_dir, cooldown=args.cooldown, progress=progress,
+                )
+                moe_offload_result["expert_count"] = moe["expert_count"]
+                moe_offload_result["expert_used_count"] = moe["expert_used_count"]
+                moe_offload_result["block_count"] = block_count
+        elif moe is not None:
+            print(f"  MoE model detected (expert_count={moe['expert_count']}) but "
+                  f"--sweep-moe-offload not given; skipping the --n-cpu-moe sweep. Every "
+                  f"expert stays resident in VRAM regardless of expert_used_count - see "
+                  f"README's MoE section.", flush=True)
+
         for series in ("prefill", "generation"):
             print(f"  [{series} {config.tag()}]", flush=True)
             result = run_one(
                 image=args.image, gpu_gids=gpu_gids, host_model_path=model,
                 series=series, config=config, device=args.device,
-                depths=depths, results_dir=model_results_dir,
+                depths=depths, results_dir=model_results_dir, progress=progress,
             )
             results.append(result)
             print(f"    {result.status} (rc={result.return_code})", flush=True)
@@ -757,6 +1126,7 @@ def main() -> None:
             "context_length": max_ctx,
             "final_config": asdict(config),
             "tuning_log": tuning_log,
+            "moe_offload_curve": moe_offload_result,
             "repetitions": REPETITIONS,
             "prefill_tokens": PREFILL_TOKENS,
             "generation_tokens": GENERATION_TOKENS,
@@ -788,6 +1158,7 @@ def main() -> None:
             "model_architecture": gguf_metadata.get("general.architecture"),
             "model_name": gguf_metadata.get("general.name"),
             "model_context_length": max_ctx,
+            "model_moe": moe,
             "run_id": run_id,
             "run_completed_at": completed_at,
             "mode": mode,

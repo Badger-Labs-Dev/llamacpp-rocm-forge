@@ -4,6 +4,7 @@ import type { ResultsFile } from "./types";
 import { VersionChart } from "./VersionChart";
 import { SensitivityChart } from "./SensitivityChart";
 import { RecommendationCard } from "./RecommendationCard";
+import { MoeOffloadChart } from "./MoeOffloadChart";
 
 function App() {
   const [data, setData] = useState<ResultsFile | null>(null);
@@ -45,7 +46,7 @@ function App() {
       <div className="page">
         <p className="error-note">
           Failed to load results.json: {error}. Run{" "}
-          <code>benchmark/generate_results_json.py</code> first.
+          <code>benchmark/generate_viewer_data.py</code> first.
         </p>
       </div>
     );
@@ -54,7 +55,7 @@ function App() {
   if (!data) {
     return (
       <div className="page">
-        <p>Loading results\u2026</p>
+        <p>Loading results…</p>
       </div>
     );
   }
@@ -65,7 +66,7 @@ function App() {
         <p>
           No benchmark results found. Run a{" "}
           <code>--full-sweep</code> benchmark, then{" "}
-          <code>benchmark/generate_results_json.py</code>.
+          <code>benchmark/generate_viewer_data.py</code>.
         </p>
       </div>
     );
@@ -145,6 +146,22 @@ function App() {
                 config={selectedRun.final_config}
                 tuningLog={selectedRun.tuning_log}
               />
+            </section>
+          )}
+
+          {selectedRun?.moe_offload_curve && (
+            <section className="card">
+              <h2>MoE expert offload (--n-cpu-moe)</h2>
+              <p className="section-note">
+                This model is MoE (expert_count={selectedRun.moe_offload_curve.expert_count}) -
+                every expert has to be resident in VRAM regardless of how few
+                are active per token, so a large MoE model can need CPU
+                offload to fit even though its active-parameter count looks
+                small. For <strong>{selectedRun.run_id}</strong>: minimum
+                --n-cpu-moe that fits at each context depth, and how much
+                throughput drops as more experts get offloaded.
+              </p>
+              <MoeOffloadChart curve={selectedRun.moe_offload_curve} />
             </section>
           )}
         </>
