@@ -11,7 +11,7 @@ from adapters.outbound.terminal_progress import TerminalProgressReporter as Prog
 from application import moe_sweep as moe_sweep_module
 from domain.models import RunResult
 from domain.progress import ProbeProgress
-from generate_viewer_data import depth0_throughput, read_curve
+from generate_viewer_data import depth0_throughput, normalize_final_config, read_curve
 from run_bench import BenchConfig, planned_probe_count, sweep_moe_offload_quick
 
 
@@ -133,6 +133,23 @@ class ProgressTrackerTests(unittest.TestCase):
             serialized = json.dumps(curve)
             self.assertNotIn("NaN", serialized)
             self.assertNotIn("Infinity", serialized)
+
+    def test_normalize_final_config_backfills_legacy_offload_fields(self):
+        legacy = {"ubatch": 2048, "batch": 2048, "ctk": "f16", "ctv": "f16", "flash_attn": 1}
+        normalized = normalize_final_config(legacy)
+        self.assertEqual(normalized["flash_attn"], "1")
+        self.assertEqual(normalized["gpu_layers"], 99)
+        self.assertIsNone(normalized["block_count"])
+        self.assertEqual(normalized["n_cpu_layers"], 0)
+        self.assertEqual(normalized["n_cpu_moe"], 0)
+
+    def test_normalize_final_config_preserves_present_values(self):
+        current = {
+            "ubatch": 1024, "batch": 2048, "ctk": "q8_0", "ctv": "q8_0",
+            "flash_attn": "on", "gpu_layers": 30, "block_count": 40,
+            "n_cpu_layers": 11, "n_cpu_moe": 2,
+        }
+        self.assertEqual(normalize_final_config(current), current)
 
 
 if __name__ == "__main__":

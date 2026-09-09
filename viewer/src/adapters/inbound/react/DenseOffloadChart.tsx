@@ -1,104 +1,40 @@
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { DenseOffloadCurve } from "../../../domain/results";
+import { denseChartData } from "../../../domain/chartData";
 
-interface Props {
-  curve: DenseOffloadCurve;
-}
+interface Props { curve: DenseOffloadCurve }
+const COLORS = ["#6ea8fe", "#ff7b7f", "#2dd4bf", "#fbbf24", "#c084fc", "#f472b6"];
+const TICK = { fontSize: 12, fill: "#c4c8d4" };
 
-const LINE_COLORS = ["#2563eb", "#e5484d", "#12a594", "#f59e0b", "#8b5cf6", "#ec4899"];
-
-/** Dense-model throughput as transformer/output layers move between CPU and GPU. */
 export function DenseOffloadChart({ curve }: Props) {
-  const allNgl = Array.from(
-    new Set(curve.by_depth.flatMap((depth) => depth.results.map((point) => point.n_gpu_layers))),
-  ).sort((a, b) => a - b);
-
-  const data = allNgl.map((ngl) => {
-    const row: Record<string, number | null> = { ngl };
-    for (const depth of curve.by_depth) {
-      const point = depth.results.find((result) => result.n_gpu_layers === ngl);
-      row[`depth_${depth.depth}`] = point?.status === "ok" ? point.avg_ts : null;
-    }
-    return row;
-  });
-
-  return (
-    <>
+  const { candidates, rows } = denseChartData(curve);
+  const byNgl = candidates.map((ngl) => ({
+    ngl,
+    ...Object.fromEntries(rows.map((row) => [`depth_${row.depth}`, row.points[ngl].value])),
+  }));
+  const failures = rows.flatMap((row) => candidates.filter((ngl) => row.points[ngl].state === "failed").map((ngl) => `${row.depth.toLocaleString()} / --ngl ${ngl}`));
+  return <>
+    <div role="img" aria-label="Measured dense offload throughput by GPU layer count. Untested candidates are gaps; failures are listed separately.">
       <ResponsiveContainer width="100%" height={320}>
-        <LineChart data={data} margin={{ top: 8, right: 24, bottom: 24, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #333)" />
-          <XAxis
-            dataKey="ngl"
-            type="number"
-            domain={[0, curve.max_gpu_layers]}
-            tick={{ fontSize: 12 }}
-            label={{ value: "--ngl (layers on GPU)", position: "insideBottom", offset: -8, fontSize: 12 }}
-          />
-          <YAxis
-            tick={{ fontSize: 12 }}
-            label={{ value: "prefill tok/s", angle: -90, position: "insideLeft", fontSize: 12 }}
-          />
-          <Tooltip
-            formatter={(value: unknown, name: unknown) => [
-              typeof value === "number" ? value.toFixed(1) : "OOM / didn't fit",
-              String(name),
-            ]}
-            labelFormatter={(ngl) => `--ngl ${ngl}`}
-          />
+        <LineChart data={byNgl} margin={{ top: 8, right: 16, bottom: 28, left: 12 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="ngl" type="number" domain={[0, curve.max_gpu_layers]} tick={TICK} label={{ value: "--ngl (layers on GPU)", position: "insideBottom", offset: -10, fill: "#c4c8d4", fontSize: 12 }} />
+          <YAxis tick={TICK} label={{ value: "prefill tok/s", angle: -90, position: "insideLeft", fill: "#c4c8d4", fontSize: 12 }} />
+          <Tooltip formatter={(value: unknown) => [typeof value === "number" ? `${value.toFixed(1)} tok/s` : "not measured", ""]} />
           <Legend />
-          {curve.by_depth.map((depth, index) => (
-            <Line
-              key={depth.depth}
-              type="monotone"
-              dataKey={`depth_${depth.depth}`}
-              name={`depth ${depth.depth.toLocaleString()}`}
-              stroke={LINE_COLORS[index % LINE_COLORS.length]}
-              strokeWidth={2}
-              connectNulls
-              dot={{ r: 3 }}
-            />
-          ))}
+          {rows.map((row, index) => <Line key={row.depth} type="monotone" dataKey={`depth_${row.depth}`} name={`depth ${row.depth.toLocaleString()}`} stroke={COLORS[index % COLORS.length]} strokeWidth={2} connectNulls={false} dot={{ r: 3 }} />)}
         </LineChart>
       </ResponsiveContainer>
-      <table className="moe-boundary-table">
-        <thead>
-          <tr>
-            <th>Context depth</th>
-            <th>Maximum --ngl that fits</th>
-          </tr>
-        </thead>
-        <tbody>
-          {curve.by_depth.map((depth) => (
-            <tr key={depth.depth}>
-              <td>{depth.depth.toLocaleString()}</td>
-              <td>
-                {depth.max_ngl_that_fits !== null
-                  ? `${depth.max_ngl_that_fits} / ${curve.max_gpu_layers}`
-                  : "doesn't fit even at --ngl 0"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="caveat-note">
-        The exact fitting boundary is binary-searched at every depth. Throughput samples below
-        that boundary show where moving more layers to CPU causes a nonlinear performance cliff.
-        {curve.final_ngl !== null ? (
-          <>The final depth curve holds <code>--ngl {curve.final_ngl}</code> fixed—the value safe at
-          the deepest tested context—so context depth is the only changing variable there.</>
-        ) : (
-          <>No final depth curve was run because even <code>--ngl 0</code> could not fit the deepest requested context.</>
-        )}
-      </p>
-    </>
-  );
+    </div>
+    {failures.length > 0 && <p className="failure-note"><strong>Failed probes:</strong> {failures.join("; ")}. Untested combinations are not failures.</p>}
+    <div className="table-scroll"><table className="data-table">
+      <caption>Exact dense capacity boundaries and all candidate states</caption>
+      <thead><tr><th scope="col">Context depth</th><th scope="col">Maximum --ngl that fits</th>{candidates.map((ngl) => <th scope="col" key={ngl}>ngl {ngl}</th>)}</tr></thead>
+      <tbody>{curve.by_depth.map((depth, index) => <tr key={depth.depth}>
+        <td>{depth.depth.toLocaleString()}</td><td>{depth.max_ngl_that_fits === null ? "none fit" : `${depth.max_ngl_that_fits} / ${curve.max_gpu_layers}`}</td>
+        {candidates.map((ngl) => { const point = rows[index].points[ngl]; return <td key={ngl}>{point.state === "measured" ? `${point.value!.toFixed(1)} tok/s` : point.state}</td>; })}
+      </tr>)}</tbody>
+    </table></div>
+    <p className="caveat-note">The exact fitting boundary is binary-searched at every depth. {curve.final_ngl === null ? "No final curve ran because even --ngl 0 did not fit at the deepest context." : `The final depth curve fixes --ngl ${curve.final_ngl}, the value safe at the deepest tested context.`}</p>
+  </>;
 }

@@ -73,6 +73,33 @@ def depth0_throughput(curve: list[dict], series: str) -> float | None:
     return None
 
 
+# Fields the current contract requires in final_config (see
+# application/viewer_dataset.py's _FINAL_CONFIG_FIELDS) that older
+# metadata.json files - written before this viewer-dataset migration -
+# may not have recorded. Filled with a value the UI can render honestly
+# rather than failing the whole publish step on old-format runs.
+_LEGACY_FINAL_CONFIG_DEFAULTS = {
+    "gpu_layers": 99,   # historical legacy default: full offload requested
+    "block_count": None,
+    "n_cpu_layers": 0,
+    "n_cpu_moe": 0,
+}
+
+
+def normalize_final_config(final_config: dict) -> dict:
+    """Backfill/coerce a final_config dict written by an older producer
+    version so it satisfies the current contract without inventing
+    misleading performance-tuned values - only ever fills structural gaps
+    (missing offload/capacity fields) or normalizes representation
+    (flash_attn as a string), never overwrites a value that is present."""
+    normalized = dict(final_config)
+    for key, default in _LEGACY_FINAL_CONFIG_DEFAULTS.items():
+        normalized.setdefault(key, default)
+    if "flash_attn" in normalized and not isinstance(normalized["flash_attn"], str):
+        normalized["flash_attn"] = str(normalized["flash_attn"])
+    return normalized
+
+
 def build_run_entry(model_dir: Path, run_dir: Path) -> dict | None:
     metadata = read_json(run_dir / "metadata.json")
     if metadata is None:
@@ -86,7 +113,7 @@ def build_run_entry(model_dir: Path, run_dir: Path) -> dict | None:
         "status": metadata.get("status"),
         "mode": metadata.get("mode"),
         "environment": metadata.get("environment", {}),
-        "final_config": metadata.get("final_config", {}),
+        "final_config": normalize_final_config(metadata.get("final_config", {})),
         "depths_tested": metadata.get("depths_tested", []),
         "prefill_depth0_ts": depth0_throughput(curve, "prefill"),
         "generation_depth0_ts": depth0_throughput(curve, "generation"),

@@ -18,7 +18,7 @@ class NewContainerNameTests(unittest.TestCase):
     def test_produces_unique_prefixed_names(self):
         a, b = new_container_name(), new_container_name()
         self.assertNotEqual(a, b)
-        self.assertTrue(a.startswith("r9700-llm-bench-"))
+        self.assertTrue(a.startswith("llamacpp-rocm-forge-"))
 
 
 class RunProbeTests(unittest.TestCase):

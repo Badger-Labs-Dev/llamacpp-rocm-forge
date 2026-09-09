@@ -7,6 +7,12 @@ from domain.models import BenchConfig
 from domain.planning import campaign_budget, quick_moe_candidates
 from domain.progress import ProbeProgress
 
+VALID_FINAL_CONFIG = {
+    "ubatch": 1024, "batch": 2048, "ctk": "f16", "ctv": "f16",
+    "flash_attn": "auto", "gpu_layers": 99, "block_count": None,
+    "n_cpu_layers": 0, "n_cpu_moe": 0,
+}
+
 
 class BenchmarkApplicationTests(unittest.TestCase):
     def test_budget_preserves_worst_case_and_work_parts(self):
@@ -90,7 +96,9 @@ class BenchmarkApplicationTests(unittest.TestCase):
                 "model_slug": "example",
                 "runs": [{
                     "run_id": "test", "status": "finished", "mode": "fixed",
-                    "environment": {}, "final_config": {}, "curve": [],
+                    "run_completed_at": "2026-09-09T00:00:00+00:00",
+                    "environment": {}, "final_config": VALID_FINAL_CONFIG.copy(), "depths_tested": [],
+                    "prefill_depth0_ts": None, "generation_depth0_ts": None, "curve": [],
                     "tuning_log": [], "moe_offload_curve": None,
                 }],
             }],
@@ -105,7 +113,9 @@ class BenchmarkApplicationTests(unittest.TestCase):
                 "model_slug": "example",
                 "runs": [{
                     "run_id": "test", "status": "finished", "mode": "fixed",
-                    "environment": {}, "final_config": {}, "curve": [],
+                    "run_completed_at": "2026-09-09T00:00:00+00:00",
+                    "environment": {}, "final_config": VALID_FINAL_CONFIG.copy(), "depths_tested": [],
+                    "prefill_depth0_ts": None, "generation_depth0_ts": None, "curve": [],
                     "tuning_log": [], "moe_offload_curve": None,
                 }],
             }],
@@ -185,6 +195,39 @@ class BenchmarkApplicationTests(unittest.TestCase):
     def test_viewer_contract_rejects_malformed_dense_offload_curve(self):
         dataset = self._valid_dataset()
         dataset["models"][0]["runs"][0]["dense_offload_curve"] = {}
+        with self.assertRaises(ValueError):
+            validate_viewer_dataset(dataset)
+
+    def test_viewer_contract_rejects_empty_final_config(self):
+        dataset = self._valid_dataset()
+        dataset["models"][0]["runs"][0]["final_config"] = {}
+        with self.assertRaises(ValueError):
+            validate_viewer_dataset(dataset)
+
+    def test_viewer_contract_rejects_malformed_nested_moe_result(self):
+        dataset = self._valid_dataset()
+        dataset["models"][0]["runs"][0]["moe_offload_curve"] = {
+            "mode": "thorough", "expert_count": 8, "expert_used_count": 2,
+            "block_count": 40, "by_depth": [{
+                "depth": 0, "min_ncmoe_that_fits": 0,
+                "results": [{"n_cpu_moe": 0, "status": "ok", "avg_ts": "fast"}],
+            }],
+        }
+        with self.assertRaises(ValueError):
+            validate_viewer_dataset(dataset)
+
+    def test_viewer_contract_rejects_json_boole_as_integers(self):
+        dataset = self._valid_dataset()
+        dataset["models"][0]["runs"][0]["final_config"]["gpu_layers"] = True
+        with self.assertRaises(ValueError):
+            validate_viewer_dataset(dataset)
+
+    def test_viewer_contract_requires_nullable_nested_fields(self):
+        dataset = self._valid_dataset()
+        dataset["models"][0]["runs"][0]["dense_offload_curve"] = {
+            "mode": "thorough", "block_count": 4, "max_gpu_layers": 5,
+            "by_depth": [],
+        }
         with self.assertRaises(ValueError):
             validate_viewer_dataset(dataset)
 

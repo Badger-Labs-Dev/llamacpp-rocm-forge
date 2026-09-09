@@ -193,7 +193,8 @@ class MainCharacterizationTests(unittest.TestCase):
                  mock.patch.object(
                      run_bench.environment_info, "gather",
                      return_value={
-                         "rocm_version": "7.2.4.1-1", "build_number": 9999,
+                         "rocm_version": "10.0.0-4", "llama_cpp_identity": "v0.4.0",
+                         "llama_cpp_commit": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
                          "gpu_vram_bytes": 32 * 1024**3,
                      },
                  ), \
@@ -204,13 +205,13 @@ class MainCharacterizationTests(unittest.TestCase):
                  mock.patch.object(run_bench, "moe_params", return_value=None):
                 run_bench.main()  # must NOT raise SystemExit for a fully-ok run
 
-            run_dir = results_root / "model" / "rocm7.2.4_llamacpp9999"
+            run_dir = results_root / "model" / "rocm10.0.0_llamacppv0.4.0"
             metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
             manifest = json.loads((run_dir / "campaign_manifest.json").read_text(encoding="utf-8"))
 
             self.assertEqual(metadata["model_slug"], "model")
             self.assertEqual(metadata["status"], "finished")
-            self.assertEqual(metadata["run_id"], "rocm7.2.4_llamacpp9999")
+            self.assertEqual(metadata["run_id"], "rocm10.0.0_llamacppv0.4.0")
             self.assertAlmostEqual(metadata["generation_tok_s_mean"], 123.4)
             self.assertEqual(
                 set(metadata.keys()),

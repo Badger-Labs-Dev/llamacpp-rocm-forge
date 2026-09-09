@@ -1,0 +1,226 @@
+# ==========================================================================
+# ROCm 10.0.0 + llama.cpp build for AMD Radeon AI PRO R9700 (gfx1201)
+#
+# Adapted from:
+#  - AMD ROCm 10.0.0 install docs (apt package manager, Ubuntu 26.04, gfx1201):
+#    https://rocm.docs.amd.com/en/latest/install/rocm.html
+#  - Official llama.cpp ROCm Dockerfile (build/runtime split pattern):
+#    https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile
+#
+# Why not FROM rocm/dev-ubuntu-26.04:<tag>-complete (what upstream llama.cpp
+# uses)? AMD has not published a ROCm 10.0.0 "complete" dev image for
+# Ubuntu 26.04 yet. Instead we start from plain ubuntu:26.04 and pull ROCm
+# 10.0.0 packages directly from AMD's apt repo, matching the "Package
+# manager (apt)" install method AMD documents for this GPU/OS/ROCm
+# combination.
+#
+# This file deliberately does NOT encode a llama.cpp version in its name or
+# pin one hard -- LLAMA_CPP_REF is a build-time --build-arg (see below), so
+# one file builds any release tag, `master`, or a specific commit. Only the
+# ROCm/Ubuntu version is fixed by this file's actual contents.
+# ==========================================================================
+
+ARG GFX_TARGET=gfx1201
+ARG ROCM_META_VERSION=10.0
+
+# What to build: a release tag (e.g. v0.4.0), a branch (e.g. master), or a
+# full 40-char commit SHA. All three fetch identically (see STAGE 2) --
+# GitHub's server resolves tag/branch/full-SHA refs the same way over
+# `git fetch`. Abbreviated/short SHAs do NOT work here (anonymous fetch by
+# hash requires the full SHA); resolve a short hash to full first, e.g.:
+#   git ls-remote https://github.com/ggml-org/llama.cpp.git | grep <short>
+ARG LLAMA_CPP_REF=v0.4.0
+
+# ==========================================================================
+# STAGE 1: rocm-repo — shared base with AMD's ROCm 10.0.0 apt repo configured
+# Both the builder and runtime stages install from this, so the repo/keyring
+# setup lives in exactly one place instead of being duplicated per-stage.
+# ==========================================================================
+FROM ubuntu:26.04 AS rocm-repo
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    gnupg2 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ROCm release signing key + apt source, per AMD's documented Ubuntu 26.04 steps
+RUN mkdir -p /etc/apt/keyrings \
+    && wget https://stable.repo.amd.com/rocm/gpg/packages.gpg -O - | \
+    gpg --dearmor | tee /etc/apt/keyrings/amdrocm.gpg > /dev/null \
+    && tee /etc/apt/sources.list.d/amdrocm-stable.sources << EOF
+X-Repo-Id: amdrocm-stable
+Types: deb
+URIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/amdrocm.gpg
+Enabled: yes
+EOF
+
+# ==========================================================================
+# STAGE 2: builder — compile llama.cpp against the ROCm 10.0.0 HIP toolchain
+#
+# amdrocm-core-dev10.0-gfx1201 is AMD's documented "ROCm Developer
+# Essentials" meta-package: the gfx1201 runtime PLUS compilers (incl.
+# hipcc/hip clang), CMake package configs, headers, and static libs — i.e.
+# the actual dev toolchain, not just "build-essential + cmake" guessing at
+# paths.
+# ==========================================================================
+FROM rocm-repo AS builder
+ARG GFX_TARGET
+ARG ROCM_META_VERSION
+ARG LLAMA_CPP_REF
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    amdrocm-core-dev${ROCM_META_VERSION}-${GFX_TARGET} \
+    git \
+    cmake \
+    build-essential \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fetch whatever LLAMA_CPP_REF names (tag, branch, or full commit SHA) with
+# a single pattern, instead of `git clone --branch` which only accepts
+# tags/branches. `git fetch origin <ref>` resolves all three the same way.
+WORKDIR /build-env
+RUN mkdir llama.cpp && cd llama.cpp \
+    && git init -q \
+    && git remote add origin https://github.com/ggml-org/llama.cpp.git \
+    && git fetch --depth 1 origin ${LLAMA_CPP_REF} \
+    && git checkout -q FETCH_HEAD
+
+WORKDIR /build-env/llama.cpp
+
+# Record which llama.cpp build this is, for the image LABELs below:
+#   - identity: what run_id()/environment introspection should call this
+#     build. A release tag (v0.4.0) keeps that exact tag; anything else
+#     (a branch or a raw commit ref) resolves to its short commit SHA, so
+#     two different `master` builds get distinguishable identities instead
+#     of both being reported as "master".
+#   - commit: the full resolved SHA, kept for the metadata record even
+#     though run_id() uses the shorter identity.
+RUN FULL_SHA="$(git rev-parse HEAD)" \
+    && SHORT_SHA="$(git rev-parse --short HEAD)" \
+    && case "${LLAMA_CPP_REF}" in \
+         v[0-9]*) IDENTITY="${LLAMA_CPP_REF}" ;; \
+         *)       IDENTITY="${SHORT_SHA}" ;; \
+       esac \
+    && echo "${IDENTITY}" > /build-env/llama-cpp-identity \
+    && echo "${FULL_SHA}" > /build-env/llama-cpp-commit
+
+# hipconfig comes from amdrocm-core-dev; use it (as upstream llama.cpp's
+# Dockerfile does) instead of hardcoding /opt/rocm paths, since ROCm's
+# install layout has changed across major versions.
+RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+    cmake -S . -B build \
+    -DGGML_HIP=ON \
+    -DAMDGPU_TARGETS=${GFX_TARGET} \
+    -DGGML_BACKEND_DL=ON \
+    -DGGML_CPU_ALL_VARIANTS=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLAMA_BUILD_TESTS=OFF \
+    && cmake --build build --config Release -j$(nproc)
+
+# Collect only what the runtime stages need: the shared libs (backends are
+# built as dynamic .so's because of GGML_BACKEND_DL=ON) plus the binaries.
+# llama-bench is built by default alongside llama-cli/llama-server -- no
+# extra cmake flags needed, just copy it out too.
+RUN mkdir -p /app/lib /app/full \
+    && find build -name "*.so*" -exec cp -P {} /app/lib \; \
+    && cp build/bin/llama-cli build/bin/llama-server build/bin/llama-bench /app/full/
+
+# ==========================================================================
+# STAGE 3: runtime-base — shared minimal ROCm 10.0.0 runtime (no dev tools)
+#
+# amdrocm10.0-gfx1201 is AMD's "ROCm Base" meta-package: "Runtimes,
+# libraries, system control and monitoring tools" for this GPU target —
+# this is the correct minimal runtime dependency (there is no separate
+# "rocm-hip-runtime" package in the ROCm 10.0.0 apt repo).
+# ==========================================================================
+FROM rocm-repo AS runtime-base
+ARG GFX_TARGET
+ARG ROCM_META_VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    amdrocm${ROCM_META_VERSION}-${GFX_TARGET} \
+    libgomp1 \
+    libcurl4 \
+    curl \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Register ROCm's shared libs (libamdhip64, libhipblas, libhipblaslt, ...)
+# with the dynamic linker permanently, instead of relying on
+# LD_LIBRARY_PATH. GGML_BACKEND_DL=ON makes llama.cpp dlopen() its HIP
+# backend at runtime, and dlopen() honors ld.so's cache/config the same way
+# normal linking does -- so this is sufficient, avoids the BuildKit
+# "UndefinedVar" lint warning from referencing an unset $LD_LIBRARY_PATH,
+# and keeps working even if a compose file or shell wipes/overrides the env.
+RUN echo /opt/rocm/lib > /etc/ld.so.conf.d/rocm.conf \
+    && echo /opt/rocm/lib64 >> /etc/ld.so.conf.d/rocm.conf \
+    && ldconfig
+
+WORKDIR /app
+COPY --from=builder /app/lib/ /app
+RUN mkdir /models
+
+# Every final stage below carries the same two small identity files,
+# queried via `docker run --rm image cat /app/.llama-cpp-identity` by
+# benchmark/adapters/outbound/rocm_environment.py instead of parsing
+# `--version` stdout (whose format has already changed once upstream).
+# (Not Docker LABELs: LABEL values can't run shell command substitution
+# like $(cat ...), so a plain file is the simplest way to carry a value
+# computed during the build into the final image.)
+COPY --from=builder /build-env/llama-cpp-identity /app/.llama-cpp-identity
+COPY --from=builder /build-env/llama-cpp-commit /app/.llama-cpp-commit
+
+# ==========================================================================
+# STAGE 4a: light — llama-cli only
+#
+# No ENTRYPOINT: llama-cli is invoked with different args every run and
+# has no single "this is what the container is for" command the way
+# server's llama-server does. Put /app on PATH instead, so
+# `docker run image llama-cli ...` (or llama-bench, below) works the same
+# way running that binary on a normal host would.
+# ==========================================================================
+FROM runtime-base AS light
+COPY --from=builder /app/full/llama-cli /app/llama-cli
+ENV PATH="/app:${PATH}"
+
+# ==========================================================================
+# STAGE 4c: bench — llama-bench only (throughput/latency benchmarking)
+#
+# No ENTRYPOINT for the same reason as light: benchmark/adapters/outbound/
+# docker_llama_bench.py invokes this image as
+# `docker run ... image llama-bench -m ... -o jsonl ...`, i.e. it expects
+# `llama-bench` to be a runnable command inside the container, not to BE
+# the container's fixed entrypoint.
+# ==========================================================================
+FROM runtime-base AS bench
+COPY --from=builder /app/full/llama-bench /app/llama-bench
+ENV PATH="/app:${PATH}"
+
+# ==========================================================================
+# STAGE 4b: server — llama-server only (default build target)
+#
+# Defaults below are just that -- defaults. Every LLAMA_ARG_* here is a
+# normal env var and can be overridden per-deployment from a docker-compose
+# `environment:` block without touching this image (e.g. LLAMA_ARG_MODEL,
+# LLAMA_ARG_N_GPU_LAYERS, LLAMA_ARG_CTX_SIZE). See llama-server --help for
+# the full list of `--flag` <-> `LLAMA_ARG_*` mappings.
+#
+# server keeps its ENTRYPOINT (unlike light/bench): it's the one
+# long-running daemon here, so "this container's job is to run
+# llama-server" is a reasonable fixed default.
+# ==========================================================================
+FROM runtime-base AS server
+ENV LLAMA_ARG_HOST=0.0.0.0
+ENV LLAMA_ARG_PORT=8080
+ENV LLAMA_ARG_N_GPU_LAYERS=99
+COPY --from=builder /app/full/llama-server /app/llama-server
+EXPOSE 8080
+HEALTHCHECK CMD ["curl", "-f", "http://localhost:8080/health"]
+ENTRYPOINT ["/app/llama-server"]

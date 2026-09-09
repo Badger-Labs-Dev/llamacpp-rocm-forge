@@ -42,7 +42,7 @@ cd viewer
 npm run build
 ```
 
-`vite.config.ts` sets the project-site base path to `/r9700-llm-bench/`. The GitHub Actions deployment workflow runs `benchmark/generate_viewer_data.py` before the Vite build.
+`vite.config.ts` sets the project-site base path to `/llamacpp-rocm-forge/`. The GitHub Actions deployment workflow runs `benchmark/generate_viewer_data.py` before the Vite build.
 
 ## What the viewer shows
 

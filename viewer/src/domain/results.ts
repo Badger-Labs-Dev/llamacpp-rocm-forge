@@ -1,11 +1,14 @@
 // Viewer-domain representation of contracts/viewer-dataset.schema.json.
 // Keep this framework-free: React and Recharts are adapters.
 
+export type RunStatus = "finished" | "partial" | "failed";
+export type PointStatus = "ok" | "partial" | "failed";
+
 export interface CurveRow {
   series: "prefill" | "generation";
   n_depth: number;
   avg_ts: number | null;
-  status: string;
+  status: PointStatus;
 }
 
 export interface TuningStage {
@@ -20,9 +23,9 @@ export interface FinalConfig {
   ctk: string;
   ctv: string;
   flash_attn: string;
-  gpu_layers?: number;
-  block_count?: number | null;
-  n_cpu_layers?: number;
+  gpu_layers: number;
+  block_count: number | null;
+  n_cpu_layers: number;
   n_cpu_moe: number;
 }
 
@@ -57,6 +60,7 @@ export interface DenseOffloadPoint {
 export interface DenseOffloadDepth {
   depth: number;
   max_ngl_that_fits: number | null;
+  estimate?: Record<string, unknown> | null;
   results: DenseOffloadPoint[];
 }
 
@@ -81,7 +85,7 @@ export interface Environment {
 export interface RunEntry {
   run_id: string;
   run_completed_at: string | null;
-  status: string;
+  status: RunStatus;
   mode: string;
   environment: Environment;
   final_config: FinalConfig;
@@ -96,10 +100,10 @@ export interface RunEntry {
 
 export interface ModelEntry {
   model_slug: string;
-  model_filename: string | null;
-  model_architecture: string | null;
-  model_name: string | null;
-  model_context_length: number | null;
+  model_filename?: string | null;
+  model_architecture?: string | null;
+  model_name?: string | null;
+  model_context_length?: number | null;
   runs: RunEntry[];
 }
 

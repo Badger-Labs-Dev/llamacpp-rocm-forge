@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://badger-labs-dev.github.io/r9700-llm-bench/contracts/viewer-dataset.schema.json",
+  "$id": "https://badger-labs-dev.github.io/llamacpp-rocm-forge/contracts/viewer-dataset.schema.json",
   "title": "R9700 benchmark viewer dataset",
   "type": "object",
   "required": ["schema_version", "generated_at", "models"],
@@ -27,11 +27,11 @@
     },
     "run": {
       "type": "object",
-      "required": ["run_id", "status", "mode", "environment", "final_config", "curve", "tuning_log", "moe_offload_curve"],
+      "required": ["run_id", "run_completed_at", "status", "mode", "environment", "final_config", "depths_tested", "prefill_depth0_ts", "generation_depth0_ts", "curve", "tuning_log", "moe_offload_curve"],
       "properties": {
         "run_id": { "type": "string" },
         "run_completed_at": { "type": ["string", "null"] },
-        "status": { "type": "string" },
+        "status": { "type": "string", "enum": ["finished", "partial", "failed"] },
         "mode": { "type": "string" },
         "environment": { "type": "object" },
         "final_config": { "$ref": "#/$defs/final_config" },
@@ -55,7 +55,7 @@
         "series": { "type": "string", "enum": ["prefill", "generation"] },
         "n_depth": { "type": "integer" },
         "avg_ts": { "type": ["number", "null"] },
-        "status": { "type": "string" }
+        "status": { "type": "string", "enum": ["ok", "partial", "failed"] }
       }
     },
     "tuning_stage": {
@@ -73,6 +73,7 @@
     },
     "final_config": {
       "type": "object",
+      "required": ["ubatch", "batch", "ctk", "ctv", "flash_attn", "gpu_layers", "block_count", "n_cpu_layers", "n_cpu_moe"],
       "properties": {
         "ubatch": { "type": "integer" },
         "batch": { "type": "integer" },

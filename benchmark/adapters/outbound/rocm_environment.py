@@ -5,8 +5,8 @@ metadata.json so results stay comparable (and distinguishable) across
 llama.cpp/ROCm upgrades over time.
 
 Usage:
-    ./environment_info.py --image r9700-llm-bench:rocm-7.2.4 --device ROCm0
-    ./environment_info.py --image r9700-llm-bench:rocm-7.2.4 --json
+    ./environment_info.py --image llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench --device ROCm0
+    ./environment_info.py --image llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench --json
 """
 
 from __future__ import annotations
@@ -27,19 +27,47 @@ def _run(cmd: list[str], timeout: int = 20) -> str:
 
 
 def rocm_version(image: str) -> str | None:
-    """Query the installed rocm-core package version inside the image."""
-    output = _run(["docker", "run", "--rm", image, "dpkg-query", "-W", "-f=${Version}", "rocm-core"])
+    """Query the installed ROCm core meta-package version inside the
+    image. ROCm 10's apt packaging split what used to be a single
+    'rocm-core' package into gfx-target-specific meta-packages
+    (amdrocm-core{version}-{gfx_target}, e.g. amdrocm-core10.0-gfx1201);
+    there is no bare 'rocm-core' package to query anymore, so this
+    pattern-matches whichever amdrocm-core* package is actually
+    installed instead of hardcoding one name."""
+    output = _run([
+        "docker", "run", "--rm", "--entrypoint", "bash", image, "-c",
+        "dpkg-query -W -f='${Package} ${Version}\\n' 'amdrocm-core*' 2>/dev/null | head -1",
+    ])
     output = output.strip()
-    return output or None
+    if not output:
+        return None
+    parts = output.split(" ", 1)
+    return parts[1] if len(parts) == 2 else None
 
 
 def llama_cpp_build(image: str) -> dict:
-    """Parse llama-cli --version output: 'version: 9974 (94761d304)'."""
-    output = _run(["docker", "run", "--rm", image, "llama-cli", "--version"])
-    match = re.search(r"version:\s*(\d+)\s*\(([0-9a-f]+)\)", output)
-    if not match:
-        return {"build_number": None, "build_commit": None}
-    return {"build_number": int(match.group(1)), "build_commit": match.group(2)}
+    """Read the llama.cpp identity/commit files baked into the image by
+    Dockerfile.rocm-10.0.0.ubuntu26 (see its STAGE 2 comments), instead
+    of parsing `llama-cli --version` stdout. Two reasons this replaced
+    the old regex-on-stdout approach:
+      - llama-bench (what run_bench.py actually benchmarks) has no
+        --version flag at all - only llama-cli/llama-server do.
+      - Even where --version exists, a locally-built image reports
+        'version: 0.4.0-dev (build 1, commit <sha>)' - the '(build N)'
+        counter is meaningless for a local build (it's always "1"
+        regardless of which commit was built), so it can't distinguish
+        two different `master` builds from each other the way the old
+        upstream-CI build-number scheme could.
+    identity is a release tag (v0.4.0) when LLAMA_CPP_REF was a tag, or
+    the short commit SHA otherwise (branch or raw commit ref) - see
+    run_id() below for why that's the right thing to key run directories
+    on."""
+    identity = _run(["docker", "run", "--rm", "--entrypoint", "cat", image, "/app/.llama-cpp-identity"]).strip()
+    commit = _run(["docker", "run", "--rm", "--entrypoint", "cat", image, "/app/.llama-cpp-commit"]).strip()
+    return {
+        "llama_cpp_identity": identity or None,
+        "llama_cpp_commit": commit or None,
+    }
 
 
 def gpu_info(rocm_smi_device_index: int = 0) -> dict:
@@ -105,13 +133,20 @@ def short_rocm_version(version: str | None) -> str:
 
 
 def run_id(env: dict) -> str:
-    """Build a run-id from ROCm version + llama.cpp build number, e.g.
-    rocm7.2.4_llamacpp9974. No date/timestamp - reruns with the same
-    versions collide on purpose (run_bench.py refuses to overwrite unless
-    --force), since the versions ARE the identity we care about tracking."""
+    """Build a run-id from ROCm version + llama.cpp identity, e.g.
+    rocm10.0.0_llamacppv0.4.0 for a release build or
+    rocm10.0.0_llamacpp5266f24 for a `master`/commit build. No
+    date/timestamp - reruns with the same versions collide on purpose
+    (run_bench.py refuses to overwrite unless --force), since the
+    versions ARE the identity we care about tracking. Uses
+    llama_cpp_identity (a slugified release tag, or a short commit SHA)
+    rather than a raw build counter, since a locally-built image's build
+    counter is always "1" regardless of which commit was actually
+    built - it can't distinguish two different `master` builds the way
+    upstream's CI build-number scheme could."""
     rocm_part = f"rocm{short_rocm_version(env.get('rocm_version'))}"
-    build_number = env.get("build_number")
-    llama_part = f"llamacpp{build_number}" if build_number is not None else "llamacppunknown"
+    identity = env.get("llama_cpp_identity")
+    llama_part = slugify_version(identity, "llamacpp") if identity else "llamacppunknown"
     return f"{rocm_part}_{llama_part}"
 
 

@@ -1,3 +1,19 @@
+# ==========================================================================
+# RETIRED / REFERENCE ONLY - not actively built or maintained.
+#
+# Superseded by ../Dockerfile.rocm-10.0.0.ubuntu26, which targets ROCm
+# 10.0.0 with a cleaner multistage structure (shared apt-repo base stage,
+# light/server/bench split, LLAMA_CPP_REF build-arg for pinning releases
+# or specific commits). This file also carries a third-party RDMA-patched
+# llama.cpp fork rather than vanilla upstream, so it was never a clean
+# ROCm-version-only comparison baseline to begin with.
+#
+# Kept here only as a short-term reference for a future ROCm 7.2.4 vs.
+# 10.0.0 performance comparison - if/when that's needed, prefer rebuilding
+# a Dockerfile.rocm-7.2.4.ubuntu26 using the same structure as
+# ../Dockerfile.rocm-10.0.0.ubuntu26 rather than reviving this file as-is.
+# ==========================================================================
+
 # Ubuntu port of Dockerfile.rocm-7.2.4-rdma-fix.
 #
 # Notes for readers coming from the Fedora version of this file:

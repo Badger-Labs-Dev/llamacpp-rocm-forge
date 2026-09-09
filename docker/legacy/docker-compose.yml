@@ -1,0 +1,44 @@
+# ==========================================================================
+# RETIRED / REFERENCE ONLY - not actively deployed from this repo.
+#
+# This repo (llamacpp-rocm-forge) is scoped to building+tagging benchmark
+# images and running the benchmark itself - not to running llama-server
+# as a persistent, always-on service. That belongs in
+# homelab-llm-router (vllm/ and litellm-headroom/ compose stacks there
+# already own the "real production practices for an always-on service"
+# tier: standard `docker compose up`, portable across homelab machines).
+# See that repo for the actual server deployment.
+#
+# Kept here only as a reference starting point if you're setting up the
+# equivalent stack there - update the `dockerfile:` context path below
+# (it's relative to this file's original home in ../, not here) before
+# reusing it anywhere.
+# ==========================================================================
+
+services:
+  llama-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile.rocm-10.0.0.ubuntu26
+      target: server
+      args:
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-v0.4.0}
+    image: llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-server
+    ports:
+      - "8080:8080"
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      # Host directory holding your .gguf model files, read-only in the container.
+      - ${MODELS_DIR:-./models}:/models:ro
+    environment:
+      # Path to a specific GGUF, relative to the /models mount above.
+      # The image already sets sane defaults (host 0.0.0.0, port 8080,
+      # -ngl 99); override any of these per-deployment here instead of
+      # editing the Dockerfile. Full list: llama-server --help (look for
+      # "(env: LLAMA_ARG_*)" next to each flag).
+      LLAMA_ARG_MODEL: /models/${MODEL_FILE:?set MODEL_FILE, e.g. in a .env file}
+      # LLAMA_ARG_N_GPU_LAYERS: "99"
+      # LLAMA_ARG_CTX_SIZE: "8192"
+    restart: unless-stopped

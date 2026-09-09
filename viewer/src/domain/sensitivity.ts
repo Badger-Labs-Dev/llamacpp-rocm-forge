@@ -1,5 +1,7 @@
 import type { TuningStage } from "./results";
 
+export type SensitivityImpact = "low" | "medium" | "high" | "non_comparable";
+
 export interface SensitivityBar {
   stage: string;
   label: string;
@@ -7,7 +9,8 @@ export interface SensitivityBar {
   worstLabel: string;
   bestValue: number;
   worstValue: number;
-  swingPct: number;
+  swingPct: number | null;
+  impact: SensitivityImpact;
   candidateCount: number;
 }
 
@@ -23,6 +26,17 @@ function labelForCandidate(stage: string, key: string): string {
   return stage === "flash_attn" ? (FLASH_ATTN_LABELS[key] ?? key) : key;
 }
 
+/** null swingPct means the worst valid candidate scored zero while the best
+ * scored positive: a relative percentage would be meaningless (division by
+ * zero), so this is reported as non-comparable rather than as some very
+ * large or "unbounded-but-still-a-number" swing. */
+export function impactForSwing(swingPct: number | null): SensitivityImpact {
+  if (swingPct === null) return "non_comparable";
+  if (swingPct >= 20) return "high";
+  if (swingPct >= 5) return "medium";
+  return "low";
+}
+
 export function stageSensitivity(stage: TuningStage): SensitivityBar | null {
   const entries = Object.entries(stage.scores).filter(([, value]) => value >= 0);
   if (entries.length < 2) return null;
@@ -33,6 +47,9 @@ export function stageSensitivity(stage: TuningStage): SensitivityBar | null {
     if (entry[1] > best[1]) best = entry;
     if (entry[1] < worst[1]) worst = entry;
   }
+  const swingPct = worst[1] === 0
+    ? (best[1] > 0 ? null : 0)
+    : ((best[1] - worst[1]) / worst[1]) * 100;
   return {
     stage: stage.stage,
     label: STAGE_LABELS[stage.stage] ?? stage.stage,
@@ -40,7 +57,8 @@ export function stageSensitivity(stage: TuningStage): SensitivityBar | null {
     worstLabel: labelForCandidate(stage.stage, worst[0]),
     bestValue: best[1],
     worstValue: worst[1],
-    swingPct: worst[1] > 0 ? ((best[1] - worst[1]) / worst[1]) * 100 : 0,
+    swingPct,
+    impact: impactForSwing(swingPct),
     candidateCount: entries.length,
   };
 }
@@ -49,5 +67,9 @@ export function sensitivityBars(tuningLog: TuningStage[]): SensitivityBar[] {
   return tuningLog
     .map(stageSensitivity)
     .filter((bar): bar is SensitivityBar => bar !== null)
-    .sort((left, right) => right.swingPct - left.swingPct);
+    .sort((left, right) => {
+      if (left.swingPct === null) return -1;
+      if (right.swingPct === null) return 1;
+      return right.swingPct - left.swingPct;
+    });
 }

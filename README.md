@@ -1,12 +1,12 @@
-# r9700-llm-bench
+# llamacpp-rocm-forge
 
-Benchmark GGUF models with llama.cpp and ROCm 7.2.4 on an AMD Radeon AI PRO R9700 (`gfx1201`). The benchmark runs in plain Docker on Ubuntu 24.04. It is deliberately narrower than the Strix Halo project it began from: one discrete R9700, one local Docker workflow, and results that can drive a static recommendation site.
+Build llama.cpp Docker images against any ROCm + llama.cpp version combination, and benchmark them. Currently targets AMD Radeon AI PRO R9700 (`gfx1201`) on Ubuntu 26.04; started as a pure benchmarking tool but the build side ([docs/building.md](docs/building.md)) turned out valuable on its own — it's now also how correctly-tagged `bench`/`server`/`light` images get produced for other uses (e.g. an always-on `llama-server` deployment elsewhere, see [homelab-llm-router](https://github.com/rayjanwilson/homelab-llm-router)).
 
 ## Quick start
 
 ### 1. Install prerequisites
 
-- Docker, with the local `r9700-llm-bench:rocm-7.2.4` image built. See [building the image](docs/building.md).
+- Docker, with the local `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench` image built. See [building the image](docs/building.md).
 - [`uv`](https://docs.astral.sh/uv/), which keeps the Python dependency for Hugging Face model resolution in this repo instead of relying on whichever `python3` is on `PATH`.
 
 ```bash
@@ -87,3 +87,5 @@ The raw `results/` directory is committed because CI has no GPU to reproduce it.
 ## Scope
 
 This repo was seeded from [amd-strix-halo-toolboxes](https://github.com/kyuz0/amd-strix-halo-toolboxes), which targets a Strix Halo APU, Fedora Toolbx, and a multi-host orchestration workflow. Its retained files under `benchmark/` are protocol references only; they are not part of this runnable R9700 path. The viewer generator for this repo is `benchmark/generate_viewer_data.py`.
+
+GPU target is currently fixed to `gfx1201` (the R9700) at the Dockerfile/build-arg level; making it a configurable parameter (default `gfx1201`, accepting a comma-separated list for a multi-arch build) is a planned follow-up, not yet implemented.

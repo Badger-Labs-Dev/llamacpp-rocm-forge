@@ -28,7 +28,7 @@ _ACTIVE_CONTAINERS: set[str] = set()
 
 
 def new_container_name() -> str:
-    return f"r9700-llm-bench-{uuid.uuid4().hex[:12]}"
+    return f"llamacpp-rocm-forge-{uuid.uuid4().hex[:12]}"
 
 
 def kill_active_containers() -> None:

@@ -49,10 +49,10 @@ A failed depth or an infeasible fully-offloaded MoE point prunes work that canno
 
 ## Recovering from an interrupted run
 
-Every Docker invocation receives a generated `r9700-llm-bench-...` name. The driver tracks those names and kills them on Ctrl-C, SIGTERM, unhandled exceptions, and per-depth timeouts. `kill -9` cannot run cleanup handlers. If VRAM remains occupied after a forceful interruption, inspect and remove any remaining containers:
+Every Docker invocation receives a generated `llamacpp-rocm-forge-...` name. The driver tracks those names and kills them on Ctrl-C, SIGTERM, unhandled exceptions, and per-depth timeouts. `kill -9` cannot run cleanup handlers. If VRAM remains occupied after a forceful interruption, inspect and remove any remaining containers:
 
 ```bash
-docker ps --filter name=r9700-llm-bench- --format '{{.Names}}'
-docker kill $(docker ps --filter name=r9700-llm-bench- -q)
+docker ps --filter name=llamacpp-rocm-forge- --format '{{.Names}}'
+docker kill $(docker ps --filter name=llamacpp-rocm-forge- -q)
 rocm-smi --showmeminfo vram
 ```
