@@ -1,10 +1,6 @@
 """Model resolution adapter: turns a --model argument (host path or
 Hugging Face reference) into a local GGUF file, and derives filesystem-safe
 identity and benchmark depths from that file's GGUF metadata.
-
-Moved out of run_bench.py verbatim (behavior-preserving extraction, see
-docs/architecture.md's migration rule) - callers still exist at the same
-names via run_bench.py's re-exports.
 """
 
 from __future__ import annotations

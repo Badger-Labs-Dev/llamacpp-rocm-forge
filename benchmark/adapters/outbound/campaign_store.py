@@ -14,6 +14,8 @@ import csv
 import json
 from pathlib import Path
 
+from adapters.outbound.model_resolution import model_key
+
 
 def load_jsonl_rows(path: Path) -> list[dict]:
     if not path.is_file():
@@ -34,10 +36,6 @@ def mean_ts(jsonl_path: Path) -> float:
     rows = load_jsonl_rows(jsonl_path)
     values = [r.get("avg_ts") for r in rows if r.get("avg_ts") is not None]
     return sum(values) / len(values) if values else -1.0
-
-
-def model_key(model_path: str) -> str:
-    return Path(model_path).name
 
 
 def write_curve_summary(results: list, summary_path: Path) -> int:

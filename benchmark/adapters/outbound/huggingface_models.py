@@ -1,8 +1,7 @@
 """Resolve Hugging Face model references (URIs, repo IDs, ollama-style tags)
 into local file paths, downloading via the Hugging Face cache if needed.
 
-Supports the forms a user is likely to copy off the model card's "Download
-with hf CLI" / "Use this model" buttons:
+Supports the reference forms a user is likely to copy off a model card:
 
     hf://org/repo/path/to/file.gguf     -> download that exact file
     org/repo                            -> no filename given: list available

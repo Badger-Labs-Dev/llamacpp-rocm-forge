@@ -26,11 +26,6 @@ MOE_EXTRA_SAMPLE_COUNT = 3     # extra throughput samples above the found bounda
                                 # for the thorough mode's "how hard does tps dive" curve
 
 
-def moe_offload_candidates(block_count: int, n: int = MOE_QUICK_CANDIDATE_COUNT) -> tuple[int, ...]:
-    """Compatibility name for the domain's quick MoE candidate rule."""
-    return quick_moe_candidates(block_count, n)
-
-
 def probe_moe_offload(
     *,
     image: str,
@@ -75,7 +70,7 @@ def sweep_moe_offload_quick(
     every depth. Simple and fast, but the boundary between fitting and
     not-fitting could fall between two candidates rather than exactly at
     one - see sweep_moe_offload_thorough() for the precise version."""
-    candidates = moe_offload_candidates(block_count)
+    candidates = quick_moe_candidates(block_count)
     by_depth = []
     for depth_index, depth in enumerate(depths):
         point_results = []

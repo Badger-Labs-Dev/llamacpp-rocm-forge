@@ -9,9 +9,10 @@ import run_bench
 from adapters.outbound.campaign_store import write_curve_summary
 from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
 from application import moe_sweep as moe_sweep_module
+from domain.models import RunResult
 from domain.progress import ProbeProgress
 from generate_viewer_data import depth0_throughput, read_curve
-from run_bench import BenchConfig, RunResult, planned_probe_count, sweep_moe_offload_quick
+from run_bench import BenchConfig, planned_probe_count, sweep_moe_offload_quick
 
 
 class ProgressTrackerTests(unittest.TestCase):

@@ -49,7 +49,7 @@ from adapters.outbound import rocm_environment as environment_info
 from adapters.outbound.docker_runner import kill_active_containers
 from adapters.outbound.gguf_metadata import moe_params, read_gguf_metadata
 from adapters.outbound.model_resolution import (
-    derive_depths_for_model as _derive_depths_for_model,
+    derive_depths_for_model,
     model_slug,
     resolve_model_reference,
 )
@@ -57,7 +57,6 @@ from adapters.outbound.terminal_progress import TerminalProgressReporter as Prog
 from application.auto_tune import (
     UBATCH_CANDIDATES,
     auto_tune,
-    probe_config,
     probe_depths,
     valid_batch_grid_count,
 )
@@ -65,8 +64,6 @@ from application.calibration import pick_best_ubatch
 from application.moe_sweep import (
     MOE_EXTRA_SAMPLE_COUNT,
     MOE_QUICK_CANDIDATE_COUNT,
-    moe_offload_candidates,
-    probe_moe_offload,
     sweep_moe_offload_quick,
     sweep_moe_offload_thorough,
 )
@@ -75,12 +72,10 @@ from application.run_curve import (
     GENERATION_TOKENS,
     PREFILL_TOKENS,
     REPETITIONS,
-    build_llama_bench_command,
-    probe_for,
     run_one,
 )
 from application.run_campaign import CampaignConfig, run_model_campaign
-from domain.models import BenchConfig, RunResult
+from domain.models import BenchConfig
 from domain.planning import campaign_budget
 from domain.progress import ProbeProgress
 
@@ -105,12 +100,6 @@ def _install_cleanup_handlers() -> None:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, _handle_signal)
-
-
-def derive_depths_for_model(model_path: Path) -> tuple[tuple[int, ...], int | None]:
-    """Compatibility wrapper around the model-resolution adapter's depth
-    derivation, pinned to this module's PREFILL_TOKENS."""
-    return _derive_depths_for_model(model_path, prefill_tokens=PREFILL_TOKENS)
 
 
 def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: dict | None) -> tuple[int, str]:
@@ -227,6 +216,8 @@ def main() -> None:
     print(f"  {env}", flush=True)
     print(f"  run_id: {run_id}", flush=True)
 
+    any_failed = False
+    any_partial = False
     for model in models:
         slug = model_slug(model)
         model_results_dir = args.results_root / slug / run_id
@@ -244,7 +235,7 @@ def main() -> None:
 
         print(f"\n== {model.name} -> {model_results_dir} ==", flush=True)
 
-        depths, max_ctx = derive_depths_for_model(model)
+        depths, max_ctx = derive_depths_for_model(model, prefill_tokens=PREFILL_TOKENS)
         if args.max_depth is not None:
             depths = tuple(d for d in depths if d <= args.max_depth) or (0,)
         if max_ctx is not None:
@@ -265,7 +256,7 @@ def main() -> None:
         )
         progress.start(detail=progress_detail)
 
-        run_model_campaign(
+        outcome = run_model_campaign(
             image=args.image, gpu_gids=gpu_gids, device=args.device, model=model,
             results_root=args.results_root, run_id=run_id, env=env,
             config=CampaignConfig(
@@ -286,16 +277,11 @@ def main() -> None:
             prefill_tokens=PREFILL_TOKENS, generation_tokens=GENERATION_TOKENS,
             repetitions=REPETITIONS,
         )
-
-    any_failed = False
-    any_partial = False
-    for model in models:
-        slug = model_slug(model)
-        run_dir = args.results_root / slug / run_id
-        if (run_dir / "campaign.failed").exists():
+        if outcome.failed:
             any_failed = True
-        elif (run_dir / "campaign.partial").exists():
+        elif outcome.partial:
             any_partial = True
+
     if any_failed:
         sys.exit(1)
     if any_partial:
