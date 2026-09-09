@@ -46,7 +46,7 @@ It is the right default when the goal is to see the shape of the throughput trad
 
 Thorough mode finds the exact first fitting `-ncmoe` value with binary search, then adds several samples above it to show the throughput decline.
 
-At one fixed context depth, fitting is treated as monotonic: once `-ncmoe N` fits, a larger value can only free more GPU memory. Start with a failed lower bound and a fitting upper bound, test the midpoint, and keep the half containing the transition. A 40-layer model needs at most about six boundary probes instead of one probe per possible layer count.
+At one fixed context depth, fitting is treated as monotonic: once `-ncmoe N` fits, a larger value can only free more GPU memory. Start with a failed lower bound and a fitting upper bound, test the midpoint, and keep the half containing the transition. The probe bound is `2 + ceil(log2(block_count + 1))`: a 40-layer model needs at most 8 boundary probes instead of one probe per possible layer count.
 
 Context produces a second monotonic relationship. As depth grows, the KV cache takes more VRAM, so the fitting boundary can stay unchanged or move toward more CPU offload; it cannot move lower. The next depth begins from the previous depth's boundary rather than starting from zero every time.
 

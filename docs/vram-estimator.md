@@ -1,13 +1,13 @@
 # VRAM estimator
 
-`docker/gguf-vram-estimator.py` estimates model weights, KV-cache memory, and a configurable runtime overhead for one GGUF model. It reads the GGUF header directly and supports multi-part GGUFs when every shard is present beside the selected file.
+`docker/legacy/gguf-vram-estimator.py` estimates model weights, KV-cache memory, and a configurable runtime overhead for one GGUF model. It reads the GGUF header directly and supports multi-part GGUFs when every shard is present beside the selected file.
 
 The estimate is useful for planning context sizes before an expensive benchmark. Treat it as a planning value, not a promise: driver allocations, backend behavior, quantization, and other GPU processes can move the real limit.
 
 ## Run it
 
 ```bash
-python3 docker/gguf-vram-estimator.py \
+python3 docker/legacy/gguf-vram-estimator.py \
   ~/models/your-model.gguf \
   --contexts 4096 32768 131072 262144
 ```
@@ -15,7 +15,7 @@ python3 docker/gguf-vram-estimator.py \
 The default context list spans 4K through 1M tokens. Use `--contexts` to select the sizes you actually care about.
 
 ```bash
-python3 docker/gguf-vram-estimator.py \
+python3 docker/legacy/gguf-vram-estimator.py \
   ~/models/your-model.gguf \
   --contexts 8192 32768 65536 \
   --overhead 3.0

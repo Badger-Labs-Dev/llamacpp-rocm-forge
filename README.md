@@ -90,4 +90,4 @@ The raw `results/` directory is committed because CI has no GPU to reproduce it.
 
 This repo was seeded from [amd-strix-halo-toolboxes](https://github.com/kyuz0/amd-strix-halo-toolboxes), which targets a Strix Halo APU, Fedora Toolbx, and a multi-host orchestration workflow. Its retained files under `benchmark/` are protocol references only; they are not part of this runnable R9700 path. The viewer generator for this repo is `benchmark/generate_viewer_data.py`.
 
-GPU target is currently fixed to `gfx1201` (the R9700) at the Dockerfile/build-arg level; making it a configurable parameter (default `gfx1201`, accepting a comma-separated list for a multi-arch build) is a planned follow-up, not yet implemented.
+GPU target defaults to `gfx1201` (the R9700), but is fully configurable: build for other single archs or several at once (`GFX_TARGETS` in `docker-bake.hcl`/`Makefile`), or one fat multi-arch image covering every ROCm-supported GPU (`GFX_TARGET=all`). See [docs/building.md#building-for-multiple-gpus](docs/building.md#building-for-multiple-gpus).
