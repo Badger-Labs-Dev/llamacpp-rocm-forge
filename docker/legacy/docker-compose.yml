@@ -23,7 +23,7 @@ services:
       target: server
       args:
         LLAMA_CPP_REF: ${LLAMA_CPP_REF:-v0.4.0}
-    image: llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-server
+    image: llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-server
     ports:
       - "8080:8080"
     devices:

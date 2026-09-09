@@ -8,7 +8,7 @@ The build adapts [AMD's official ROCm 10.0.0 install docs](https://rocm.docs.amd
 
 ### 1. Install prerequisites
 
-- Docker, with the local `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench` image built. See [building the image](docs/building.md).
+- Docker, with the local `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench` image built. See [building the image](docs/building.md).
 - [`uv`](https://docs.astral.sh/uv/), which keeps the Python dependency for Hugging Face model resolution in this repo instead of relying on whichever `python3` is on `PATH`.
 
 ```bash

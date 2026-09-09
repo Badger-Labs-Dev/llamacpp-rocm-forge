@@ -5,8 +5,8 @@ metadata.json so results stay comparable (and distinguishable) across
 llama.cpp/ROCm upgrades over time.
 
 Usage:
-    ./environment_info.py --image llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench --device ROCm0
-    ./environment_info.py --image llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench --json
+    ./environment_info.py --image llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench --device ROCm0
+    ./environment_info.py --image llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench --json
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # Building the Docker image
 
-The benchmark uses a local Docker image rather than Toolbx or Podman. It is built for ROCm 10.0.0 on the R9700 (`gfx1201`) and uses Ubuntu 26.04.
+The benchmark uses a local Docker image rather than Toolbx or Podman. It is built for ROCm 10.0.0 on Ubuntu 26.04, and defaults to a single GPU target — the R9700 (`gfx1201`) — but can build for any gfx target(s) AMD's ROCm 10.0.0 apt repo publishes; see "Building for multiple GPUs" below.
 
 The Dockerfile (`docker/Dockerfile.rocm-10.0.0.ubuntu26`) doesn't pin a llama.cpp version itself — that's a build-time `LLAMA_CPP_REF` argument, so the same file builds a tagged release, `master`, or a specific commit.
 
@@ -21,9 +21,9 @@ The Dockerfile has three final targets, each producing a single-binary image:
 - `server` — `llama-server` only, with `LLAMA_ARG_*` env var defaults set (host/port/`-ngl`). Not run from this repo (see "Running the server" below) — built here so a benchmarked image can be handed off elsewhere.
 - `light` — `llama-cli` only, for quick interactive checks.
 
-Tag convention: `<image>:rocm_<rocm-version>-llama_<llama-cpp-ref>-<target>`, e.g. `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench`. Underscore binds a label to its value (`rocm_10.0.0`, `llama_v0.4.0`); hyphen separates distinct fields — keeps the two version numbers from running together.
+Tag convention: `<image>:rocm_<rocm-version>-llama_<llama-cpp-ref>-<gfx-target>-<target>`, e.g. `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench`. Underscore binds a label to its value (`rocm_10.0.0`, `llama_v0.4.0`); hyphen separates distinct fields — keeps the version numbers, the gfx target, and the build target from running together.
 
-The `-bench`/`-server`/`-light` suffix is required, not cosmetic — `--target` only controls which stage `docker build` runs, it does not change the image tag, so building two different targets with the same tag makes the second build silently overwrite the first in `docker images`.
+The gfx-target segment (`gfx1201`) is required, not cosmetic, same reason as the `-bench`/`-server`/`-light` suffix: building two different `GFX_TARGET`s with the same tag makes the second build silently overwrite the first in `docker images`. See "Building for multiple GPUs" below for building more than one target in one invocation.
 
 `bench` and `light` have no fixed `ENTRYPOINT` (their binary is invoked with different args every run, so `/app` is just added to `PATH` instead — `docker run image llama-bench -m ...` works the way running it on a normal host would). `server` keeps a fixed entrypoint since it's a persistent daemon.
 
@@ -50,6 +50,24 @@ LLAMA_CPP_REF=master docker buildx bake bench
 
 `docker buildx bake --print [target]` shows the resolved tags/args without building anything — useful for checking what a tag will come out as before committing to a real build.
 
+## Building for multiple GPUs
+
+By default, both `bake` and `make` build a single-arch image for `gfx1201` (the R9700) — one `AMDGPU_TARGETS` value baked into the compiled binary, one image per build target. This is deliberately *not* a fat multi-arch image the way [upstream llama.cpp's Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) builds one (`AMDGPU_TARGETS='gfx908;gfx90a;...'`, every arch in one binary) — see [docs/building.md#where-this-build-comes-from](#where-this-build-comes-from) for why. Single-arch keeps each image smaller and each build faster; the tradeoff is one image per GPU instead of one image that runs anywhere.
+
+To build for more than one GPU, pass a list — `docker-bake.hcl`'s `GFX_TARGETS` (comma-separated) or the Makefile's `GFX_TARGETS` (space-separated) — and each entry fans out into its own fully-tagged image, naming which gfx target it's for:
+
+```bash
+# bake: comma-separated
+GFX_TARGETS=gfx1201,gfx1151 docker buildx bake bench
+# -> llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench
+# -> llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1151-bench
+
+# make: space-separated
+make bench GFX_TARGETS="gfx1201 gfx1151"
+```
+
+Each entry must be a gfx target AMD actually publishes ROCm 10.0.0 apt meta-packages for (`amdrocm10.0-<gfx>`, `amdrocm-core-dev10.0-<gfx>`) — check [AMD's meta-packages table](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=26.04&i=pkgman#rocm-install-meta-packages) for the current list. There's no built-in "build for every supported arch" default — `GFX_TARGETS` is meant to stay an explicit, maintained set matching the GPUs actually in use, not silently balloon build time by building archs nobody runs.
+
 ### Why bake over hand-typed `docker build -t ...`?
 
 Nothing about Docker auto-generates a tag from `--build-arg` values — that's always the caller's job. Two ways to automate it were considered:
@@ -70,21 +88,23 @@ Useful for understanding, or if you don't have `buildx`/`make` available. From t
 cd docker
 docker build \
   --build-arg LLAMA_CPP_REF=v0.4.0 \
+  --build-arg GFX_TARGET=gfx1201 \
   --target bench \
-  -t llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench \
+  -t llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench \
   -f Dockerfile.rocm-10.0.0.ubuntu26 \
   .
 ```
 
-The benchmark's default `--image` value is `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench`, matching this build, so no extra flag is needed after it completes. Check [llama.cpp's releases page](https://github.com/ggml-org/llama.cpp/releases) for the current tag and adjust `LLAMA_CPP_REF`/the image tag together if you're building a newer one.
+The benchmark's default `--image` value is `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench`, matching this build, so no extra flag is needed after it completes. Check [llama.cpp's releases page](https://github.com/ggml-org/llama.cpp/releases) for the current tag and adjust `LLAMA_CPP_REF`/the image tag together if you're building a newer one.
 
 The `server` image builds the same way with `--target server` and a `-server` tag suffix instead:
 
 ```bash
 docker build \
   --build-arg LLAMA_CPP_REF=v0.4.0 \
+  --build-arg GFX_TARGET=gfx1201 \
   --target server \
-  -t llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-server \
+  -t llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-server \
   -f Dockerfile.rocm-10.0.0.ubuntu26 \
   .
 ```
@@ -98,19 +118,20 @@ LLAMA_CPP_REF=master docker buildx bake bench
 # or by hand:
 docker build \
   --build-arg LLAMA_CPP_REF=master \
+  --build-arg GFX_TARGET=gfx1201 \
   --target bench \
-  -t llamacpp-rocm-forge:rocm_10.0.0-llama_master-bench \
+  -t llamacpp-rocm-forge:rocm_10.0.0-llama_master-gfx1201-bench \
   -f Dockerfile.rocm-10.0.0.ubuntu26 \
   .
 ```
 
-Tag the image with whatever makes the build identifiable to you (beyond the required target suffix) — the run-id the benchmark records is derived from what's actually baked into the image (see below), not from the docker tag, so the rest of the tag is just for your own bookkeeping.
+Tag the image with whatever makes the build identifiable to you (beyond the required target/gfx suffixes) — the run-id the benchmark records is derived from what's actually baked into the image (see below), not from the docker tag, so the rest of the tag is just for your own bookkeeping.
 
 ## Check the image
 
 ```bash
-docker run --rm llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench llama-bench --help
-docker run --rm --entrypoint cat llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench /app/.llama-cpp-identity
+docker run --rm llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench llama-bench --help
+docker run --rm --entrypoint cat llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench /app/.llama-cpp-identity
 ```
 
 The last command shows what `run_id()` will call this build in results directory names — a release tag (`v0.4.0`) if `LLAMA_CPP_REF` was a tag, otherwise a short commit SHA.

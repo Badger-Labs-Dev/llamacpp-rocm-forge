@@ -146,7 +146,7 @@ def parse_args() -> argparse.Namespace:
                               "ctk/ctv=f16, flash-attn=auto) and, for a detected MoE model, "
                               "sweep the quick 5-point --n-cpu-moe curve instead of the exact "
                               "boundary bisection")
-    parser.add_argument("--image", default="llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-bench", help="Docker image to benchmark")
+    parser.add_argument("--image", default="llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench", help="Docker image to benchmark")
     parser.add_argument("--device", default="ROCm0", help="llama-bench -dev target (default: ROCm0, the R9700)")
     parser.add_argument("--gpu-gid", action="append", default=[],
                          help="Host GID(s) for /dev/dri and /dev/kfd access (repeatable); "
