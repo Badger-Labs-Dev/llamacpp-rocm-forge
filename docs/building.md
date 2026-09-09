@@ -11,7 +11,7 @@ This repo is scoped to building/tagging images and running the benchmark itself 
 `docker/Dockerfile.rocm-10.0.0.ubuntu26` is not a from-scratch build; it adapts two upstream sources, which are also credited in the file's own header comment:
 
 - **ROCm packages**: pulled directly from AMD's official apt repo, per [AMD's ROCm 10.0.0 install docs](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=radeon&w=compute&gpu=amd-radeon-ai-pro-r9700&gfx=gfx1201&os=ubuntu&ubuntu-ver=26.04&i=pkgman) for this exact GPU/OS/ROCm combination ("Package manager (apt)" install method). AMD hasn't published a ROCm 10.0.0 `rocm/dev-ubuntu-26.04:...-complete` container image yet, so instead of `FROM`-ing one (what upstream llama.cpp's own Dockerfile does), STAGE 1 starts from plain `ubuntu:26.04` and installs the ROCm apt repo/keyring/packages by hand, following those docs.
-- **llama.cpp build structure**: the build/runtime-split staging (a `builder` stage that compiles, then several slim final stages that each `COPY --from=builder` just one binary) mirrors [llama.cpp's own official ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (`.devops/rocm.Dockerfile` in that repo) — same `GGML_HIP=ON`/`AMDGPU_TARGETS`/`GGML_BACKEND_DL=ON` cmake flags, same `light`/`server`/(their `full`, our `bench`) split pattern. Adapted rather than copied wholesale: their base image is `rocm/dev-ubuntu-*-complete` (not available for ROCm 10.0.0/Ubuntu 26.04 yet, per above), and their `ROCM_DOCKER_ARCH` builds a fat multi-GPU binary for every gfx target at once, where this Dockerfile currently builds one target (`gfx1201`) at a time via `AMDGPU_TARGETS=${GFX_TARGET}`.
+- **llama.cpp build structure**: the build/runtime-split staging (a `builder` stage that compiles, then several slim final stages that each `COPY --from=builder` just one binary) mirrors [llama.cpp's own official ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (`.devops/rocm.Dockerfile` in that repo) — same `GGML_HIP=ON`/`AMDGPU_TARGETS`/`GGML_BACKEND_DL=ON` cmake flags, same `light`/`server`/(their `full`, our `bench`) split pattern. Adapted rather than copied wholesale: their base image is `rocm/dev-ubuntu-*-complete` (not available for ROCm 10.0.0/Ubuntu 26.04 yet, per above). Their `ROCM_DOCKER_ARCH` always builds a fat multi-GPU binary; this Dockerfile defaults to one target (`gfx1201`) at a time via `AMDGPU_TARGETS=${GFX_TARGET}` but supports the same fat-build shape as an explicit opt-in — `GFX_TARGET=all` — see "Building for multiple GPUs" below.
 
 ## Build targets
 
@@ -67,6 +67,36 @@ make bench GFX_TARGETS="gfx1201 gfx1151"
 ```
 
 Each entry must be a gfx target AMD actually publishes ROCm 10.0.0 apt meta-packages for (`amdrocm10.0-<gfx>`, `amdrocm-core-dev10.0-<gfx>`) — check [AMD's meta-packages table](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=26.04&i=pkgman#rocm-install-meta-packages) for the current list. There's no built-in "build for every supported arch" default — `GFX_TARGETS` is meant to stay an explicit, maintained set matching the GPUs actually in use, not silently balloon build time by building archs nobody runs.
+
+### Building a fat multi-arch image (`GFX_TARGET=all`)
+
+`GFX_TARGET=all` (not `GFX_TARGETS`, the multi-target *list* variable above — this is the Dockerfile's own single-value build-arg) switches the Dockerfile itself into building one fat image covering every architecture ROCm 10.0.0 supports, the way [upstream llama.cpp's Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) always does. Via bake/make, set it through the plural `GFX_TARGETS` variable — `all` is just a one-element list there, so it fans out to a single `-all`-tagged image rather than one per arch (`bake`'s `--set target.args.GFX_TARGET=...` does **not** work here, since matrix expansion means the actual target name is `bench-gfx1201`, not `bench`):
+
+```bash
+GFX_TARGETS=all docker buildx bake bench
+# -> llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-all-bench
+
+# make: same idea, one word instead of a list
+make bench GFX_TARGETS=all
+
+# or by hand:
+docker build \
+  --build-arg LLAMA_CPP_REF=v0.4.0 \
+  --build-arg GFX_TARGET=all \
+  --target bench \
+  -t llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-all-bench \
+  -f Dockerfile.rocm-10.0.0.ubuntu26 \
+  .
+```
+
+What actually changes when `GFX_TARGET=all`:
+
+- **apt packages**: installs AMD's unsuffixed "all architectures" meta-packages (`amdrocm-core-dev10.0` in the builder stage, `amdrocm10.0` in the runtime stage) instead of the per-gfx ones.
+- **compile step**: `-DAMDGPU_TARGETS` gets the Dockerfile's hardcoded `GFX_TARGETS_ALL` build-arg — a semicolon-joined list of every gfx AMD's ROCm 10.0.0 meta-packages table lists — instead of the single `GFX_TARGET` value. There's no `AMDGPU_TARGETS=all`; cmake/LLVM has no such keyword, so an explicit enumerated list is unavoidable (same reason upstream llama.cpp hardcodes its own `ROCM_DOCKER_ARCH`).
+
+`GFX_TARGETS_ALL` is maintained by hand in the Dockerfile — it is **not** derived automatically from AMD's docs or from the compiler. Re-check [AMD's meta-packages table](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=26.04&i=pkgman#rocm-install-meta-packages) and update the Dockerfile's `GFX_TARGETS_ALL` arg when bumping `ROCM_META_VERSION` to a new ROCm release, or the fat build will silently miss newly-supported architectures.
+
+The tradeoff versus single-arch: a fat image is a materially bigger build (every listed arch's device code gets compiled) and a materially bigger final image, in exchange for one image that runs on any of those GPUs without rebuilding. Reach for `GFX_TARGET=all` only when that portability is actually needed — e.g. distributing a `server` image to run on whichever GPU a given homelab box happens to have, not for benchmarking one specific card.
 
 ### Why bake over hand-typed `docker build -t ...`?
 

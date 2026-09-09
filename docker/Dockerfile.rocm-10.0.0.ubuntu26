@@ -1,5 +1,6 @@
 # ==========================================================================
-# ROCm 10.0.0 + llama.cpp build for AMD Radeon AI PRO R9700 (gfx1201)
+# ROCm 10.0.0 + llama.cpp build for AMD Radeon AI PRO R9700 (gfx1201) and
+# other AMD GPUs
 #
 # Adapted from:
 #  - AMD ROCm 10.0.0 install docs (apt package manager, Ubuntu 26.04, gfx1201):
@@ -18,10 +19,32 @@
 # pin one hard -- LLAMA_CPP_REF is a build-time --build-arg (see below), so
 # one file builds any release tag, `master`, or a specific commit. Only the
 # ROCm/Ubuntu version is fixed by this file's actual contents.
+#
+# GFX_TARGET normally names one gfx arch (e.g. gfx1201) and produces a
+# single-arch image built only for that GPU -- see docker/docker-bake.hcl's
+# GFX_TARGETS for building several of those, one image each. Passing
+# GFX_TARGET=all instead switches to a single FAT multi-arch image: apt
+# installs AMD's unsuffixed "all architectures" meta-packages
+# (amdrocm-core-dev${ROCM_META_VERSION}, amdrocm${ROCM_META_VERSION}), and
+# the compile step passes every arch in GFX_TARGETS_ALL to
+# -DAMDGPU_TARGETS, mirroring upstream llama.cpp's own ROCM_DOCKER_ARCH
+# default. GFX_TARGETS_ALL is a hardcoded, manually-maintained list (same
+# approach upstream uses) sourced from AMD's ROCm meta-packages table:
+# https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=26.04&i=pkgman#rocm-install-meta-packages
+# -- re-check that table and update GFX_TARGETS_ALL when bumping
+# ROCM_META_VERSION to a new release; there is no way to derive this list
+# from cmake/AMDGPU_TARGETS itself ("all" is not a value it understands).
 # ==========================================================================
 
 ARG GFX_TARGET=gfx1201
 ARG ROCM_META_VERSION=10.0
+
+# Full arch list for GFX_TARGET=all, semicolon-joined for
+# -DAMDGPU_TARGETS. Maintained by hand against AMD's ROCm 10.0.0
+# meta-packages table (see header comment above) -- not derived
+# automatically, so it can silently go stale on a new ROCm release if not
+# re-checked.
+ARG GFX_TARGETS_ALL="gfx908;gfx90a;gfx942;gfx950;gfx1030;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
 
 # What to build: a release tag (e.g. v0.4.0), a branch (e.g. master), or a
 # full 40-char commit SHA. All three fetch identically (see STAGE 2) --
@@ -66,15 +89,23 @@ EOF
 # Essentials" meta-package: the gfx1201 runtime PLUS compilers (incl.
 # hipcc/hip clang), CMake package configs, headers, and static libs — i.e.
 # the actual dev toolchain, not just "build-essential + cmake" guessing at
-# paths.
+# paths. When GFX_TARGET=all, the unsuffixed amdrocm-core-dev10.0 is the
+# same meta-package scoped to every architecture ROCm supports instead of
+# one.
 # ==========================================================================
 FROM rocm-repo AS builder
 ARG GFX_TARGET
 ARG ROCM_META_VERSION
+ARG GFX_TARGETS_ALL
 ARG LLAMA_CPP_REF
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    amdrocm-core-dev${ROCM_META_VERSION}-${GFX_TARGET} \
+RUN if [ "${GFX_TARGET}" = "all" ]; then \
+      DEV_PKG="amdrocm-core-dev${ROCM_META_VERSION}"; \
+    else \
+      DEV_PKG="amdrocm-core-dev${ROCM_META_VERSION}-${GFX_TARGET}"; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ${DEV_PKG} \
     git \
     cmake \
     build-essential \
@@ -113,10 +144,19 @@ RUN FULL_SHA="$(git rev-parse HEAD)" \
 # hipconfig comes from amdrocm-core-dev; use it (as upstream llama.cpp's
 # Dockerfile does) instead of hardcoding /opt/rocm paths, since ROCm's
 # install layout has changed across major versions.
-RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+#
+# AMDGPU_TARGETS takes GFX_TARGETS_ALL's full semicolon-joined list when
+# GFX_TARGET=all (fat multi-arch build, same shape as upstream llama.cpp's
+# own ROCM_DOCKER_ARCH default), otherwise the single GFX_TARGET value.
+RUN if [ "${GFX_TARGET}" = "all" ]; then \
+      TARGETS="${GFX_TARGETS_ALL}"; \
+    else \
+      TARGETS="${GFX_TARGET}"; \
+    fi \
+    && HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
     cmake -S . -B build \
     -DGGML_HIP=ON \
-    -DAMDGPU_TARGETS=${GFX_TARGET} \
+    -DAMDGPU_TARGETS="${TARGETS}" \
     -DGGML_BACKEND_DL=ON \
     -DGGML_CPU_ALL_VARIANTS=ON \
     -DCMAKE_BUILD_TYPE=Release \
@@ -137,14 +177,23 @@ RUN mkdir -p /app/lib /app/full \
 # amdrocm10.0-gfx1201 is AMD's "ROCm Base" meta-package: "Runtimes,
 # libraries, system control and monitoring tools" for this GPU target —
 # this is the correct minimal runtime dependency (there is no separate
-# "rocm-hip-runtime" package in the ROCm 10.0.0 apt repo).
+# "rocm-hip-runtime" package in the ROCm 10.0.0 apt repo). When
+# GFX_TARGET=all, the unsuffixed amdrocm10.0 is the same meta-package
+# scoped to every architecture instead of one — needed so the fat
+# multi-arch binary from STAGE 2 can find a matching runtime for whichever
+# GPU it ends up running on.
 # ==========================================================================
 FROM rocm-repo AS runtime-base
 ARG GFX_TARGET
 ARG ROCM_META_VERSION
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    amdrocm${ROCM_META_VERSION}-${GFX_TARGET} \
+RUN if [ "${GFX_TARGET}" = "all" ]; then \
+      RUNTIME_PKG="amdrocm${ROCM_META_VERSION}"; \
+    else \
+      RUNTIME_PKG="amdrocm${ROCM_META_VERSION}-${GFX_TARGET}"; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ${RUNTIME_PKG} \
     libgomp1 \
     libcurl4 \
     curl \
