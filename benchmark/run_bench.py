@@ -23,12 +23,12 @@ Tuning modes (pick one; --full-sweep is the general recommendation):
                 batch/KV-cache at their defaults (fa=auto). Kept for
                 backward compatibility with earlier results directories.
   --full-sweep  Staged auto-tune across ubatch, batch, and KV cache dtype
-                (f16/q8_0/q4_0) - see auto_tune(). Runs a handful of quick
-                2-depth probes per stage rather than a full grid (which
-                would be 4 ubatch x 4 batch x 3 KV = 48 combinations -
-                infeasible to run at full depth x 3 repetitions). The
-                final chosen config is then run across the model's full
-                derived depth curve exactly once.
+                (f16/q8_0/q4_0) - see application/auto_tune.py. Runs a
+                handful of quick 2-depth probes per stage rather than a
+                full grid (which would be 4 ubatch x 4 batch x 3 KV = 48
+                combinations - infeasible to run at full depth x 3
+                repetitions). The final chosen config is then run across
+                the model's full derived depth curve exactly once.
 
 Flash attention is not swept: always passed as "auto" (llama-bench's -fa
 auto|on|off, this build's own default), which lets llama.cpp decide per
@@ -53,7 +53,7 @@ across the model's derived depths, answering "what's the minimum
 throughput drop as more gets offloaded to CPU". Every expert has to be
 resident in VRAM regardless of how few are actually active per token
 (the router can pick any of them per-token) - see moe_params() and
-sweep_moe_offload_quick()/_thorough() for the actual mechanics.
+application/moe_sweep.py for the actual mechanics.
 --sweep-moe-offload-thorough binary-searches the exact fitting boundary
 per depth instead of testing fixed evenly-spaced candidates.
 
@@ -71,114 +71,50 @@ import argparse
 import atexit
 import signal
 import sys
-import time
-from dataclasses import dataclass, replace
 from pathlib import Path
 
-from adapters.outbound.campaign_store import load_jsonl_rows, mean_ts
-from adapters.outbound.docker_llama_bench import (
-    LlamaBenchProbe,
-    docker_command as build_docker_command,
-    llama_bench_command,
-)
-from adapters.outbound.docker_runner import (
-    kill_active_containers,
-    new_container_name,
-    run_probe,
-)
+from adapters.outbound import huggingface_models as hf_models
+from adapters.outbound import rocm_environment as environment_info
+from adapters.outbound.docker_runner import kill_active_containers
 from adapters.outbound.gguf_metadata import moe_params, read_gguf_metadata
 from adapters.outbound.model_resolution import (
-    COMMON_CONTEXT_SIZES,
-    LEGACY_FIXED_DEPTHS,
     derive_depths_for_model as _derive_depths_for_model,
-    model_key,
     model_slug,
     resolve_model_reference,
 )
-from application.run_campaign import CampaignConfig, run_model_campaign
-from domain.moe_bisection import (
-    extra_throughput_samples,
-    resolve_boundary,
-)
-from domain.planning import (
-    campaign_budget,
-    quick_moe_candidates,
-    thorough_max_probes_per_depth,
-)
-from adapters.outbound import rocm_environment as environment_info
-from adapters.outbound import huggingface_models as hf_models
 from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
+from application.auto_tune import (
+    UBATCH_CANDIDATES,
+    auto_tune,
+    probe_config,
+    probe_depths,
+    valid_batch_grid_count,
+)
+from application.calibration import pick_best_ubatch
+from application.moe_sweep import (
+    MOE_EXTRA_SAMPLE_COUNT,
+    MOE_QUICK_CANDIDATE_COUNT,
+    moe_offload_candidates,
+    probe_moe_offload,
+    sweep_moe_offload_quick,
+    sweep_moe_offload_thorough,
+)
+from application.run_curve import (
+    DEPTH_COOLDOWN_SECONDS,
+    GENERATION_TOKENS,
+    PREFILL_TOKENS,
+    REPETITIONS,
+    build_llama_bench_command,
+    probe_for,
+    run_one,
+)
+from application.run_campaign import CampaignConfig, run_model_campaign
+from domain.models import BenchConfig, RunResult
+from domain.planning import campaign_budget
 from domain.progress import ProbeProgress
 
-UBATCH_CANDIDATES = (256, 512, 1024, 2048)
-BATCH_CANDIDATES = (512, 1024, 2048, 4096)
 KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
-# KV cache dtypes that require flash attention (llama.cpp hard requirement -
-# the non-fused attention path can't read a quantized KV cache at all, this
-# isn't just a perf preference).
-KV_TYPES_REQUIRING_FA = frozenset({"q8_0", "q4_0", "q5_0", "q5_1", "q4_1", "iq4_nl"})
-
-PREFILL_TOKENS = 2048
-GENERATION_TOKENS = 128
-REPETITIONS = 3
-GPU_LAYERS = 99
 COOLDOWN_SECONDS = 10
-DEPTH_TIMEOUT_SECONDS = 300  # per-depth llama-bench invocation; OOM can hang
-                             # rather than error cleanly (see run_one), so a
-                             # subprocess timeout is the only reliable guard
-DEPTH_COOLDOWN_SECONDS = 2   # short pause between depths within one run_one()
-                             # call, distinct from --cooldown between configs
-
-
-@dataclass(frozen=True)
-class BenchConfig:
-    ubatch: int = 2048
-    batch: int = 2048
-    ctk: str = "f16"
-    ctv: str = "f16"
-    flash_attn: str = "auto"  # llama-bench's -fa: "auto" | "on" | "off".
-        # "auto" lets llama.cpp decide per model/backend at load time
-        # whether the fused kernel applies (some architectures - KQ-bias
-        # models, certain hybrid/SSM models, unsupported head dims - fall
-        # back to the ordinary path regardless of this flag, silently).
-        # We stopped sweeping flash-attn on/off: forcing "on" doesn't help
-        # on architectures where FA can't apply anyway, and "auto" is
-        # already llama.cpp's own considered default as of this build.
-    n_cpu_moe: int = 0  # llama-bench's -ncmoe/--n-cpu-moe: moves the MoE
-        # feed-forward (expert) weights of the first N layers to CPU RAM,
-        # keeping attention/shared weights on GPU. 0 (default) is a no-op
-        # even for dense models - only meaningful for MoE models, where
-        # every expert must otherwise be resident in VRAM regardless of
-        # how few are active per token (see sweep_moe_offload() below).
-
-    def tag(self) -> str:
-        base = f"ub{self.ubatch}_b{self.batch}_kv{self.ctk}-{self.ctv}_fa{self.flash_attn}"
-        return f"{base}_ncmoe{self.n_cpu_moe}" if self.n_cpu_moe else base
-
-    def validate(self) -> "BenchConfig":
-        """Force flash-attn on if the KV cache dtype requires it - "auto"
-        is not guaranteed to enable FA, but a quantized KV cache can only
-        be read via the fused kernel, so "auto" alone isn't safe here."""
-        if (self.ctk in KV_TYPES_REQUIRING_FA or self.ctv in KV_TYPES_REQUIRING_FA) and self.flash_attn == "off":
-            return replace(self, flash_attn="on")
-        return self
-
-
-@dataclass
-class RunResult:
-    model: str
-    series: str  # "prefill" or "generation"
-    config: BenchConfig
-    status: str  # "ok" (all depths ran), "partial" (stopped early after a
-                 # depth failed/timed out, but at least one depth succeeded),
-                 # "failed" (no depth produced results)
-    return_code: int
-    jsonl_path: Path
-    stderr_path: Path
-    command: list[str]
-    depths_run: tuple[int, ...] = ()
-    depths_skipped: tuple[int, ...] = ()
-    stop_reason: str | None = None  # e.g. "depth 65536 timed out after 300s"
 
 
 # Names of docker containers currently running a benchmark, so they can be
@@ -206,302 +142,6 @@ def derive_depths_for_model(model_path: Path) -> tuple[tuple[int, ...], int | No
     return _derive_depths_for_model(model_path, prefill_tokens=PREFILL_TOKENS)
 
 
-def probe_for(*, model_container_path: str, series: str, config: BenchConfig, device: str, depth: int) -> LlamaBenchProbe:
-    """Build a LlamaBenchProbe from a BenchConfig - the single place that
-    maps run_bench's configuration model onto the Docker adapter's probe
-    contract, so build_llama_bench_command() and run_one() can't drift."""
-    return LlamaBenchProbe(
-        model_container_path=model_container_path,
-        series=series,
-        batch=config.batch,
-        ubatch=config.ubatch,
-        flash_attn=config.flash_attn,
-        n_cpu_moe=config.n_cpu_moe,
-        ctk=config.ctk,
-        ctv=config.ctv,
-        device=device,
-        depth=depth,
-        repetitions=REPETITIONS,
-        gpu_layers=GPU_LAYERS,
-        prefill_tokens=PREFILL_TOKENS,
-        generation_tokens=GENERATION_TOKENS,
-    )
-
-
-def build_llama_bench_command(
-    *,
-    model_container_path: str,
-    series: str,
-    config: BenchConfig,
-    device: str,
-    depth: int,
-) -> list[str]:
-    """Compatibility wrapper around the Docker adapter's llama.cpp command."""
-    return llama_bench_command(probe_for(
-        model_container_path=model_container_path,
-        series=series,
-        config=config,
-        device=device,
-        depth=depth,
-    ))
-
-
-def run_one(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    host_model_path: Path,
-    series: str,
-    config: BenchConfig,
-    device: str,
-    depths: tuple[int, ...],
-    results_dir: Path,
-    subdir: str | None = None,
-    progress: ProgressTracker | None = None,
-) -> RunResult:
-    """Run llama-bench once per depth, ascending (shallowest first).
-
-    Depths are run in separate `docker run` invocations rather than one
-    llama-bench call with a combined "-d" list, specifically so an
-    out-of-memory condition at a deep context doesn't take down the whole
-    curve: llama-bench streams JSONL results per depth as it completes
-    them (confirmed by direct testing - shallow depths finish and print
-    before a later depth OOMs), but a large KV cache allocation can also
-    just *hang* rather than error out cleanly, so a single multi-depth
-    invocation has no way to bail out of one bad depth and keep going.
-    Running depths ascending, one process per depth, with a timeout,
-    means: smaller/valid depths always get recorded, and a failure or
-    hang at some depth stops only the depths larger than it (they'd very
-    likely fail too - KV cache need only grows with depth).
-    """
-    out_dir = results_dir / subdir if subdir else results_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Resolve symlinks before mounting: Hugging Face's local cache stores
-    # models as snapshots/<hash>/model.gguf -> ../../blobs/<blob-hash>, so
-    # mounting only the file's immediate parent directory (the snapshot
-    # dir) would leave the symlink target outside the mount, unreadable
-    # inside the container. Mounting the *real* file's parent directory
-    # works for both plain files (no-op, same directory either way) and
-    # HF-cache-style symlinks.
-    real_model_path = host_model_path.resolve()
-    container_model_path = f"/models/{real_model_path.name}"
-    out_name = f"{model_key(str(host_model_path))}__{series}__{config.tag()}"
-    jsonl_path = out_dir / f"{out_name}.jsonl"
-    stderr_path = out_dir / f"{out_name}.stderr.log"
-
-    sorted_depths = tuple(sorted(depths))
-    depths_run: list[int] = []
-    depths_skipped: list[int] = []
-    stop_reason: str | None = None
-    last_return_code = 0
-    last_command: list[str] = []
-
-    jsonl_f = jsonl_path.open("w", encoding="utf-8")
-    stderr_f = stderr_path.open("w", encoding="utf-8")
-    try:
-        for i, depth in enumerate(sorted_depths):
-            if stop_reason is not None:
-                depths_skipped.append(depth)
-                continue
-
-            container_name = new_container_name()
-            probe = probe_for(
-                model_container_path=container_model_path,
-                series=series,
-                config=config,
-                device=device,
-                depth=depth,
-            )
-            docker_cmd = build_docker_command(
-                image=image,
-                container_name=container_name,
-                gpu_gids=gpu_gids,
-                model_directory=str(real_model_path.parent),
-                probe=probe,
-            )
-            last_command = docker_cmd
-            print(f"    $ {' '.join(docker_cmd)}", flush=True)
-            if progress is not None:
-                progress.before_probe(f"{series} depth={depth} {config.tag()}")
-
-            stderr_f.write(f"\n===== depth={depth} =====\n")
-            stderr_f.flush()
-
-            outcome = run_probe(
-                docker_cmd, container_name=container_name,
-                jsonl_file=jsonl_f, stderr_file=stderr_f,
-                timeout_seconds=DEPTH_TIMEOUT_SECONDS,
-            )
-            if progress is not None:
-                progress.finish_probe(elapsed_seconds=outcome.elapsed_seconds)
-
-            last_return_code = outcome.returncode
-            if outcome.timed_out:
-                stop_reason = (
-                    f"depth {depth} timed out after {DEPTH_TIMEOUT_SECONDS}s "
-                    f"(likely OOM/thrashing rather than a clean error); "
-                    f"skipping larger depths"
-                )
-                print(f"    TIMEOUT at depth={depth} after {DEPTH_TIMEOUT_SECONDS}s "
-                      f"(container killed); skipping remaining "
-                      f"{len(sorted_depths) - i - 1} larger depth(s)", flush=True)
-                if progress is not None:
-                    progress.prune(len(sorted_depths) - i - 1, "this series timed out at a shallower depth")
-            elif outcome.returncode != 0:
-                stop_reason = (
-                    f"depth {depth} failed (rc={outcome.returncode}); "
-                    f"skipping larger depths"
-                )
-                print(f"    FAILED at depth={depth} (rc={outcome.returncode}); "
-                      f"skipping remaining {len(sorted_depths) - i - 1} larger depth(s)",
-                      flush=True)
-                if progress is not None:
-                    progress.prune(len(sorted_depths) - i - 1, "this series failed at a shallower depth")
-            else:
-                depths_run.append(depth)
-
-            if stop_reason is None and i < len(sorted_depths) - 1:
-                time.sleep(DEPTH_COOLDOWN_SECONDS)
-    finally:
-        jsonl_f.close()
-        stderr_f.close()
-
-    if not depths_run:
-        status = "failed"
-    elif stop_reason is not None:
-        # At least one depth (possibly the last one) never produced
-        # results - "ok" would wrongly imply the full curve is complete.
-        status = "partial"
-    else:
-        status = "ok"
-
-    return RunResult(
-        model=str(host_model_path),
-        series=series,
-        config=config,
-        status=status,
-        return_code=last_return_code,
-        jsonl_path=jsonl_path,
-        stderr_path=stderr_path,
-        command=last_command,
-        depths_run=tuple(depths_run),
-        depths_skipped=tuple(depths_skipped),
-        stop_reason=stop_reason,
-    )
-
-
-def probe_depths(depths: tuple[int, ...]) -> tuple[int, ...]:
-    """Reduce a full depth list to a cheap 2-point probe: shallowest + deepest.
-
-    Used during auto-tuning stages, where we need *some* signal at both a
-    cold cache and a full one (KV-cache-quantization benefits scale with
-    depth, so testing depth 0 alone would underrate it) without paying for
-    every depth in the model's full curve.
-    """
-    if len(depths) <= 2:
-        return depths
-    return (depths[0], depths[-1])
-
-
-def probe_config(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    config: BenchConfig,
-    device: str,
-    depths: tuple[int, ...],
-    results_dir: Path,
-    progress: ProgressTracker | None = None,
-) -> float:
-    """Run a quick prefill-only probe of one config; return mean avg_ts."""
-    result = run_one(
-        image=image, gpu_gids=gpu_gids, host_model_path=model,
-        series="prefill", config=config.validate(), device=device,
-        depths=depths, results_dir=results_dir, subdir="tuning", progress=progress,
-    )
-    if result.status != "ok":
-        return -1.0
-    return mean_ts(result.jsonl_path)
-
-
-def auto_tune(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    device: str,
-    depths: tuple[int, ...],
-    results_dir: Path,
-    cooldown: int,
-    log: list[dict],
-    n_cpu_moe: int = 0,
-    progress: ProgressTracker | None = None,
-) -> BenchConfig:
-    """Staged (coordinate-descent) auto-tune: KV cache dtype, then a
-    ubatch x batch grid. Each stage probes at 2 depths (shallowest +
-    deepest) rather than the full curve, and carries its winner into the
-    next stage. For a MoE full-sweep, n_cpu_moe is conservatively set to
-    block_count so the fixed-parameter stages can evaluate their intended
-    knobs without an unrelated high-context MoE OOM; the separate MoE
-    curve later measures every candidate with the winning base config.
-    """
-    probe_d = probe_depths(depths)
-    print(f"  auto-tune: probing at depths {list(probe_d)}", flush=True)
-
-    # Stage 1: KV cache dtype, flash-attn always "auto" (quantized KV
-    # cache requires FA regardless, and validate() enforces that).
-    print("  [stage 1/2] KV cache dtype", flush=True)
-    kv_scores = {}
-    for kv in KV_CACHE_TYPES:
-        cfg = BenchConfig(ctk=kv, ctv=kv, n_cpu_moe=n_cpu_moe).validate()
-        score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
-                             device=device, depths=probe_d, results_dir=results_dir, progress=progress)
-        kv_scores[kv] = score
-        print(f"    kv={kv}: mean_ts={score:.1f}", flush=True)
-        time.sleep(cooldown)
-    best_kv = max(kv_scores, key=lambda k: kv_scores[k])
-    log.append({"stage": "kv_cache_dtype", "scores": kv_scores, "winner": best_kv})
-    print(f"  stage 1 winner: kv={best_kv}", flush=True)
-
-    # Stage 2: ubatch x batch grid, at the winning KV, depth 0 only
-    # (batch/ubatch effects show up clearly even on a cold cache, and this
-    # keeps the grid's 13 valid combinations cheap).
-    print("  [stage 2/2] ubatch x batch grid (depth 0 only)", flush=True)
-    grid_scores = {}
-    grid_combo_lookup: dict[str, tuple[int, int]] = {}
-    for ub in UBATCH_CANDIDATES:
-        for b in BATCH_CANDIDATES:
-            if ub > b:
-                continue  # llama.cpp requires ubatch <= batch
-            cfg = BenchConfig(ubatch=ub, batch=b, ctk=best_kv, ctv=best_kv,
-                              n_cpu_moe=n_cpu_moe).validate()
-            score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
-                                 device=device, depths=(0,), results_dir=results_dir, progress=progress)
-            combo_key = f"ub{ub}_b{b}"
-            grid_scores[combo_key] = score
-            grid_combo_lookup[combo_key] = (ub, b)
-            print(f"    ub={ub} b={b}: mean_ts={score:.1f}", flush=True)
-            time.sleep(cooldown)
-    best_combo = max(grid_scores, key=lambda k: grid_scores[k])
-    best_ub, best_b = grid_combo_lookup[best_combo]
-    log.append({"stage": "ubatch_batch_grid", "scores": grid_scores, "winner": best_combo})
-    print(f"  stage 2 winner: ubatch={best_ub} batch={best_b}", flush=True)
-
-    return BenchConfig(ubatch=best_ub, batch=best_b, ctk=best_kv, ctv=best_kv,
-                       n_cpu_moe=n_cpu_moe).validate()
-
-
-MOE_QUICK_CANDIDATE_COUNT = 5  # evenly spaced --n-cpu-moe candidates for quick mode
-MOE_EXTRA_SAMPLE_COUNT = 3     # extra throughput samples above the found boundary,
-                                # for the thorough mode's "how hard does tps dive" curve
-
-
-def valid_batch_grid_count() -> int:
-    return sum(ub <= batch for ub in UBATCH_CANDIDATES for batch in BATCH_CANDIDATES)
-
-
 def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: dict | None) -> tuple[int, str]:
     """CLI adapter around the domain campaign-budget calculation."""
     should_sweep_moe = moe is not None and (
@@ -520,224 +160,6 @@ def planned_probe_count(args: argparse.Namespace, depths: tuple[int, ...], moe: 
         thorough_extra_sample_count=MOE_EXTRA_SAMPLE_COUNT,
     )
     return budget.total, budget.detail
-
-
-def moe_offload_candidates(block_count: int, n: int = MOE_QUICK_CANDIDATE_COUNT) -> tuple[int, ...]:
-    """Compatibility name for the domain's quick MoE candidate rule."""
-    return quick_moe_candidates(block_count, n)
-
-
-def probe_moe_offload(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    base_config: BenchConfig,
-    n_cpu_moe: int,
-    device: str,
-    depth: int,
-    results_dir: Path,
-    progress: ProgressTracker | None = None,
-) -> tuple[bool, float]:
-    """Run one prefill probe at a specific (depth, n_cpu_moe); return
-    (fits, mean_avg_ts). fits=False on any failure/timeout - VRAM
-    exhaustion at a high depth can hang rather than error cleanly (see
-    run_one's docstring), so this relies on the same per-depth timeout."""
-    cfg = replace(base_config, n_cpu_moe=n_cpu_moe).validate()
-    result = run_one(
-        image=image, gpu_gids=gpu_gids, host_model_path=model,
-        series="prefill", config=cfg, device=device,
-        depths=(depth,), results_dir=results_dir, subdir="moe-tuning", progress=progress,
-    )
-    if result.status != "ok":
-        return False, -1.0
-    return True, mean_ts(result.jsonl_path)
-
-
-def sweep_moe_offload_quick(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    base_config: BenchConfig,
-    device: str,
-    depths: tuple[int, ...],
-    block_count: int,
-    results_dir: Path,
-    cooldown: int,
-    progress: ProgressTracker | None = None,
-) -> dict:
-    """Quick mode: fixed evenly-spaced --n-cpu-moe candidates, tested at
-    every depth. Simple and fast, but the boundary between fitting and
-    not-fitting could fall between two candidates rather than exactly at
-    one - see sweep_moe_offload_thorough() for the precise version."""
-    candidates = moe_offload_candidates(block_count)
-    by_depth = []
-    for depth_index, depth in enumerate(depths):
-        point_results = []
-        min_ncmoe_that_fits = None
-        for ncmoe in candidates:
-            fits, ts = probe_moe_offload(
-                image=image, gpu_gids=gpu_gids, model=model, base_config=base_config,
-                n_cpu_moe=ncmoe, device=device, depth=depth, results_dir=results_dir,
-                progress=progress,
-            )
-            point_results.append({
-                "n_cpu_moe": ncmoe,
-                "status": "ok" if fits else "failed",
-                "avg_ts": ts if fits else None,
-            })
-            if fits and min_ncmoe_that_fits is None:
-                min_ncmoe_that_fits = ncmoe
-            print(f"    depth={depth} ncmoe={ncmoe}: "
-                  f"{'ok, ts=' + format(ts, '.1f') if fits else 'FAILED'}", flush=True)
-            time.sleep(cooldown)
-        by_depth.append({
-            "depth": depth,
-            "min_ncmoe_that_fits": min_ncmoe_that_fits,
-            "results": point_results,
-        })
-        if min_ncmoe_that_fits is None:
-            print(f"    depth={depth}: nothing fit even at ncmoe={block_count} "
-                  f"(fully offloaded); deeper depths won't fit either, stopping", flush=True)
-            if progress is not None:
-                progress.prune(
-                    (len(depths) - depth_index - 1) * len(candidates),
-                    "fully offloaded experts could not fit at this depth",
-                )
-            break
-
-    return {
-        "mode": "quick",
-        "candidates_tested": list(candidates),
-        "by_depth": by_depth,
-    }
-
-
-def sweep_moe_offload_thorough(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    base_config: BenchConfig,
-    device: str,
-    depths: tuple[int, ...],
-    block_count: int,
-    results_dir: Path,
-    cooldown: int,
-    progress: ProgressTracker | None = None,
-) -> dict:
-    """Thorough mode: binary search for the exact min_ncmoe_that_fits per
-    depth, then a few extra throughput samples above that boundary for
-    the "how hard does throughput dive as I offload more" curve.
-
-    Relies on two monotonicity assumptions, both physically motivated
-    rather than just convenient: (1) for a fixed depth, success in
-    n_cpu_moe is monotonic - more layers offloaded to CPU only frees
-    VRAM, never uses more, so once a value fits, every larger value
-    fits too; (2) across depths, the fitting boundary is non-decreasing
-    - a deeper context needs a larger KV cache, which only adds VRAM
-    pressure, so a value that already failed at a shallower depth will
-    also fail at any deeper one. (2) means each depth's search can start
-    from the previous depth's boundary as a known-failing lower bound,
-    instead of re-searching [0, block_count] from scratch - and once the
-    boundary stabilizes across a run of depths (common - shallow depth
-    increases often don't need more headroom), it costs just one probe
-    per depth to confirm rather than a full search.
-    """
-    by_depth = []
-    known_fail_floor = -1  # -1 means "no known-failing value yet" (0 might fit)
-    per_depth_budget = thorough_max_probes_per_depth(block_count, MOE_EXTRA_SAMPLE_COUNT)
-
-    for depth_index, depth in enumerate(depths):
-        tested: dict[int, tuple[bool, float]] = {}
-
-        def probe(ncmoe: int) -> bool:
-            if ncmoe in tested:
-                return tested[ncmoe][0]
-            fits, ts = probe_moe_offload(
-                image=image, gpu_gids=gpu_gids, model=model, base_config=base_config,
-                n_cpu_moe=ncmoe, device=device, depth=depth, results_dir=results_dir,
-                progress=progress,
-            )
-            tested[ncmoe] = (fits, ts)
-            print(f"    depth={depth} ncmoe={ncmoe}: "
-                  f"{'ok, ts=' + format(ts, '.1f') if fits else 'FAILED'}", flush=True)
-            time.sleep(cooldown)
-            return fits
-
-        # Drive the pure boundary-search generator: it decides which
-        # n_cpu_moe to try next, this loop performs the actual probe I/O.
-        search = resolve_boundary(known_fail_floor=known_fail_floor, block_count=block_count)
-        try:
-            ncmoe = next(search)
-            while True:
-                ncmoe = search.send(probe(ncmoe))
-        except StopIteration as stop:
-            boundary, _search_tested = stop.value
-
-        if boundary is None:
-            by_depth.append({
-                "depth": depth,
-                "min_ncmoe_that_fits": None,
-                "results": [{"n_cpu_moe": k, "status": "ok" if v[0] else "failed",
-                              "avg_ts": v[1] if v[0] else None} for k, v in sorted(tested.items())],
-            })
-            print(f"    depth={depth}: nothing fits even at ncmoe={block_count} "
-                  f"(fully offloaded); deeper depths won't fit either, stopping", flush=True)
-            if progress is not None:
-                progress.prune(
-                    (per_depth_budget - len(tested))
-                    + (len(depths) - depth_index - 1) * per_depth_budget,
-                    "fully offloaded experts could not fit at this depth",
-                )
-            break
-
-        # Extra throughput samples above the boundary, for the dive
-        # curve - bisection alone only samples near the boundary, not
-        # spread across the range above it.
-        if boundary < block_count and MOE_EXTRA_SAMPLE_COUNT > 0:
-            for ncmoe in extra_throughput_samples(
-                boundary=boundary, block_count=block_count, sample_count=MOE_EXTRA_SAMPLE_COUNT,
-            ):
-                probe(ncmoe)
-
-        known_fail_floor = boundary - 1
-        by_depth.append({
-            "depth": depth,
-            "min_ncmoe_that_fits": boundary,
-            "results": [{"n_cpu_moe": k, "status": "ok" if v[0] else "failed",
-                          "avg_ts": v[1] if v[0] else None} for k, v in sorted(tested.items())],
-        })
-        if progress is not None:
-            progress.prune(
-                per_depth_budget - len(tested),
-                "thorough search resolved this depth below its conservative bound",
-            )
-
-    return {
-        "mode": "thorough",
-        "by_depth": by_depth,
-    }
-
-
-def pick_best_ubatch(results_dir: Path, model: str, candidates: list[int]) -> int:
-    """Legacy (--calibrate): choose the ubatch with the highest depth-0
-    prefill throughput, holding batch/KV/FA at BenchConfig defaults."""
-    best_ubatch = candidates[0]
-    best_score = -1.0
-    for ubatch in candidates:
-        cfg = BenchConfig(ubatch=ubatch)
-        path = results_dir / f"{model_key(model)}__prefill__{cfg.tag()}.jsonl"
-        rows = [r for r in load_jsonl_rows(path) if r.get("n_depth") == 0]
-        if not rows:
-            continue
-        ts_values = [r.get("avg_ts") or 0 for r in rows]
-        score = sum(ts_values) / len(ts_values) if ts_values else 0
-        if score > best_score:
-            best_score = score
-            best_ubatch = ubatch
-    return best_ubatch
 
 
 def parse_args() -> argparse.Namespace:

@@ -14,6 +14,10 @@ from unittest import mock
 
 import run_bench
 from adapters.outbound import docker_runner
+from application import auto_tune as auto_tune_module
+from application import moe_sweep as moe_sweep_module
+from application import run_campaign as run_campaign_module
+from application import run_curve as run_curve_module
 from run_bench import BenchConfig, auto_tune, run_one
 
 
@@ -42,7 +46,7 @@ class RunOneCharacterizationTests(unittest.TestCase):
             return FakeCompletedProcess(returncode=0)
 
         with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
-             mock.patch.object(run_bench.time, "sleep"):
+             mock.patch.object(run_curve_module.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
                 series="prefill", config=BenchConfig(), device="ROCm0",
@@ -65,7 +69,7 @@ class RunOneCharacterizationTests(unittest.TestCase):
             return FakeCompletedProcess(returncode=1 if depth == 2048 else 0)
 
         with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
-             mock.patch.object(run_bench.time, "sleep"):
+             mock.patch.object(run_curve_module.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
                 series="prefill", config=BenchConfig(), device="ROCm0",
@@ -92,7 +96,7 @@ class RunOneCharacterizationTests(unittest.TestCase):
             raise docker_runner.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
         with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
-             mock.patch.object(run_bench.time, "sleep"):
+             mock.patch.object(run_curve_module.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
                 series="prefill", config=BenchConfig(), device="ROCm0",
@@ -114,7 +118,7 @@ class RunOneCharacterizationTests(unittest.TestCase):
             return FakeCompletedProcess(returncode=1)
 
         with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
-             mock.patch.object(run_bench.time, "sleep"):
+             mock.patch.object(run_curve_module.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
                 series="prefill", config=BenchConfig(), device="ROCm0",
@@ -140,8 +144,8 @@ class AutoTuneCharacterizationTests(unittest.TestCase):
             return 300.0 if (config.ubatch, config.batch) == (512, 1024) else 100.0
 
         log: list[dict] = []
-        with mock.patch.object(run_bench, "probe_config", side_effect=fake_probe_config), \
-             mock.patch.object(run_bench.time, "sleep"):
+        with mock.patch.object(auto_tune_module, "probe_config", side_effect=fake_probe_config), \
+             mock.patch.object(auto_tune_module.time, "sleep"):
             config = auto_tune(
                 image="unused", gpu_gids=[], model=Path("model.gguf"), device="ROCm0",
                 depths=(0, 4096), results_dir=Path("/tmp/unused"), cooldown=0, log=log,
@@ -184,7 +188,8 @@ class MainCharacterizationTests(unittest.TestCase):
 
             with mock.patch.object(run_bench.sys, "argv", argv), \
                  mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
-                 mock.patch.object(run_bench.time, "sleep"), \
+                 mock.patch.object(run_curve_module.time, "sleep"), \
+                 mock.patch.object(run_campaign_module.time, "sleep"), \
                  mock.patch.object(
                      run_bench.environment_info, "gather",
                      return_value={"rocm_version": "7.2.4.1-1", "build_number": 9999},
@@ -235,8 +240,8 @@ class SweepMoeOffloadThoroughCharacterizationTests(unittest.TestCase):
         def fake_probe_moe_offload(*, n_cpu_moe, depth, **kwargs):
             return fits(depth, n_cpu_moe), 100.0 + n_cpu_moe
 
-        with mock.patch.object(run_bench, "probe_moe_offload", side_effect=fake_probe_moe_offload), \
-             mock.patch.object(run_bench.time, "sleep"):
+        with mock.patch.object(moe_sweep_module, "probe_moe_offload", side_effect=fake_probe_moe_offload), \
+             mock.patch.object(moe_sweep_module.time, "sleep"):
             result = run_bench.sweep_moe_offload_thorough(
                 image="unused", gpu_gids=[], model=Path("model.gguf"),
                 base_config=BenchConfig(), device="ROCm0", depths=(0, 2048),
@@ -258,8 +263,8 @@ class SweepMoeOffloadThoroughCharacterizationTests(unittest.TestCase):
                     self.assertIsNone(entry["avg_ts"])
 
     def test_nothing_fits_stops_early_and_reports_null_boundary(self):
-        with mock.patch.object(run_bench, "probe_moe_offload", return_value=(False, -1.0)), \
-             mock.patch.object(run_bench.time, "sleep"):
+        with mock.patch.object(moe_sweep_module, "probe_moe_offload", return_value=(False, -1.0)), \
+             mock.patch.object(moe_sweep_module.time, "sleep"):
             result = run_bench.sweep_moe_offload_thorough(
                 image="unused", gpu_gids=[], model=Path("model.gguf"),
                 base_config=BenchConfig(), device="ROCm0", depths=(0, 2048, 4096),

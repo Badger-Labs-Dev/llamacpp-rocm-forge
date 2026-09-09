@@ -8,6 +8,7 @@ from pathlib import Path
 import run_bench
 from adapters.outbound.campaign_store import write_curve_summary
 from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
+from application import moe_sweep as moe_sweep_module
 from domain.progress import ProbeProgress
 from generate_viewer_data import depth0_throughput, read_curve
 from run_bench import BenchConfig, RunResult, planned_probe_count, sweep_moe_offload_quick
@@ -50,13 +51,13 @@ class ProgressTrackerTests(unittest.TestCase):
         self.assertEqual(snapshot.current_total, 1)
     def test_quick_moe_sweep_prunes_unreachable_deeper_depths(self):
         tracker = ProgressTracker(ProbeProgress(total_probes=15), output=io.StringIO())
-        original_probe = run_bench.probe_moe_offload
+        original_probe = moe_sweep_module.probe_moe_offload
 
         def fake_probe(**kwargs):
             kwargs["progress"].finish_probe(elapsed_seconds=1)
             return kwargs["depth"] == 0, 100.0
 
-        run_bench.probe_moe_offload = fake_probe
+        moe_sweep_module.probe_moe_offload = fake_probe
         try:
             result = sweep_moe_offload_quick(
                 image="unused", gpu_gids=[], model=run_bench.Path("model.gguf"),
@@ -65,7 +66,7 @@ class ProgressTrackerTests(unittest.TestCase):
                 progress=tracker,
             )
         finally:
-            run_bench.probe_moe_offload = original_probe
+            moe_sweep_module.probe_moe_offload = original_probe
 
         self.assertEqual(len(result["by_depth"]), 2)
         snapshot = tracker.snapshot()
