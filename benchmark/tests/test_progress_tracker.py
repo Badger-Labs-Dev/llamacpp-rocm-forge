@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 
 import run_bench
+from bench_app.adapters.outbound.campaign_store import write_curve_summary
 from generate_viewer_data import depth0_throughput, read_curve
 from progress_tracker import ProgressTracker
-from run_bench import BenchConfig, RunResult, planned_probe_count, sweep_moe_offload_quick, write_curve_summary
+from run_bench import BenchConfig, RunResult, planned_probe_count, sweep_moe_offload_quick
 
 
 class ProgressTrackerTests(unittest.TestCase):

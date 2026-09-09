@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import run_bench
+from bench_app.adapters.outbound import docker_runner
 from run_bench import BenchConfig, auto_tune, run_one
 
 
@@ -40,7 +41,7 @@ class RunOneCharacterizationTests(unittest.TestCase):
             _write_jsonl_row(stdout, n_depth=0, avg_ts=100.0)
             return FakeCompletedProcess(returncode=0)
 
-        with mock.patch.object(run_bench.subprocess, "run", side_effect=fake_run), \
+        with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(run_bench.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
@@ -63,7 +64,7 @@ class RunOneCharacterizationTests(unittest.TestCase):
             _write_jsonl_row(stdout, n_depth=depth, avg_ts=100.0)
             return FakeCompletedProcess(returncode=1 if depth == 2048 else 0)
 
-        with mock.patch.object(run_bench.subprocess, "run", side_effect=fake_run), \
+        with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(run_bench.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
@@ -88,9 +89,9 @@ class RunOneCharacterizationTests(unittest.TestCase):
             if depth == 0:
                 _write_jsonl_row(stdout, n_depth=0, avg_ts=100.0)
                 return FakeCompletedProcess(returncode=0)
-            raise run_bench.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+            raise docker_runner.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
-        with mock.patch.object(run_bench.subprocess, "run", side_effect=fake_run), \
+        with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(run_bench.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
@@ -106,13 +107,13 @@ class RunOneCharacterizationTests(unittest.TestCase):
         # The container must not be left in the active-tracking set after
         # cleanup - a leak here would make a later interrupt kill a
         # long-gone container name instead of nothing.
-        self.assertEqual(run_bench._ACTIVE_CONTAINERS, set())
+        self.assertEqual(docker_runner._ACTIVE_CONTAINERS, set())
 
     def test_no_depth_succeeding_yields_failed_status(self):
         def fake_run(cmd, stdout, stderr, timeout):
             return FakeCompletedProcess(returncode=1)
 
-        with mock.patch.object(run_bench.subprocess, "run", side_effect=fake_run), \
+        with mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
              mock.patch.object(run_bench.time, "sleep"):
             result = run_one(
                 image="unused", gpu_gids=[], host_model_path=self.model_path,
@@ -182,7 +183,7 @@ class MainCharacterizationTests(unittest.TestCase):
                 return FakeCompletedProcess(returncode=0)
 
             with mock.patch.object(run_bench.sys, "argv", argv), \
-                 mock.patch.object(run_bench.subprocess, "run", side_effect=fake_run), \
+                 mock.patch.object(docker_runner.subprocess, "run", side_effect=fake_run), \
                  mock.patch.object(run_bench.time, "sleep"), \
                  mock.patch.object(
                      run_bench.environment_info, "gather",

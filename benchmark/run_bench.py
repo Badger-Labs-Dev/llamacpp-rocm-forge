@@ -70,28 +70,22 @@ from __future__ import annotations
 import argparse
 import atexit
 import signal
-import subprocess
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gguf_info import moe_params, read_gguf_metadata
-from bench_app.adapters.outbound.campaign_store import (
-    build_campaign_manifest,
-    build_run_metadata,
-    load_jsonl_rows,
-    mean_ts,
-    write_curve_summary,
-    write_json,
-    write_status_marker,
-)
+from bench_app.adapters.outbound.campaign_store import load_jsonl_rows, mean_ts
 from bench_app.adapters.outbound.docker_llama_bench import (
     LlamaBenchProbe,
     docker_command as build_docker_command,
     llama_bench_command,
+)
+from bench_app.adapters.outbound.docker_runner import (
+    kill_active_containers,
+    new_container_name,
+    run_probe,
 )
 from bench_app.adapters.outbound.model_resolution import (
     COMMON_CONTEXT_SIZES,
@@ -101,6 +95,7 @@ from bench_app.adapters.outbound.model_resolution import (
     model_slug,
     resolve_model_reference,
 )
+from bench_app.application.run_campaign import CampaignConfig, run_model_campaign
 from bench_app.domain.moe_bisection import (
     extra_throughput_samples,
     resolve_boundary,
@@ -187,27 +182,14 @@ class RunResult:
 
 # Names of docker containers currently running a benchmark, so they can be
 # force-killed if this script is interrupted (Ctrl-C, SIGTERM, an unhandled
-# exception). Without this, `docker run` surviving the parent script's death
-# leaves the container - and the GPU memory it holds - running indefinitely;
-# this has actually happened during development and is exactly the kind of
-# thing that silently wastes VRAM until someone notices and runs `docker
-# kill` by hand. `docker run --rm` alone does not protect against this: it
-# only removes the container after IT exits, which doesn't happen just
-# because the client/parent process died.
-_ACTIVE_CONTAINERS: set[str] = set()
-
-
-def _kill_active_containers() -> None:
-    for name in list(_ACTIVE_CONTAINERS):
-        subprocess.run(["docker", "kill", name], capture_output=True)
-        _ACTIVE_CONTAINERS.discard(name)
-
-
+# exception). See bench_app.adapters.outbound.docker_runner for the actual
+# tracking/kill mechanics; this module just wires signal/atexit handlers to
+# it.
 def _install_cleanup_handlers() -> None:
-    atexit.register(_kill_active_containers)
+    atexit.register(kill_active_containers)
 
     def _handle_signal(signum, frame):
-        _kill_active_containers()
+        kill_active_containers()
         # Restore default handling and re-raise, so the process actually
         # exits with the conventional 128+signum code instead of hanging.
         signal.signal(signum, signal.SIG_DFL)
@@ -322,7 +304,7 @@ def run_one(
                 depths_skipped.append(depth)
                 continue
 
-            container_name = f"r9700-llm-bench-{uuid.uuid4().hex[:12]}"
+            container_name = new_container_name()
             probe = probe_for(
                 model_container_path=container_model_path,
                 series=series,
@@ -345,53 +327,38 @@ def run_one(
             stderr_f.write(f"\n===== depth={depth} =====\n")
             stderr_f.flush()
 
-            # Track the container name so a signal handler or atexit hook
-            # can `docker kill` it if this script gets interrupted mid-run
-            # (see _ACTIVE_CONTAINERS above), and so a *timeout* here can
-            # kill the specific container that hung rather than leaving it
-            # running - subprocess.run(timeout=...) only kills the direct
-            # child (docker CLI), not the container it started, so without
-            # an explicit `docker kill` a timed-out depth would leak VRAM
-            # exactly like an interrupted run would.
-            _ACTIVE_CONTAINERS.add(container_name)
-            probe_started_at = time.monotonic()
-            try:
-                proc = subprocess.run(
-                    docker_cmd, stdout=jsonl_f, stderr=stderr_f,
-                    timeout=DEPTH_TIMEOUT_SECONDS,
-                )
-                last_return_code = proc.returncode
-                if proc.returncode != 0:
-                    stop_reason = (
-                        f"depth {depth} failed (rc={proc.returncode}); "
-                        f"skipping larger depths"
-                    )
-                    print(f"    FAILED at depth={depth} (rc={proc.returncode}); "
-                          f"skipping remaining {len(sorted_depths) - i - 1} larger depth(s)",
-                          flush=True)
-                    if progress is not None:
-                        progress.prune(len(sorted_depths) - i - 1, "this series failed at a shallower depth")
-                else:
-                    depths_run.append(depth)
-            except subprocess.TimeoutExpired:
-                subprocess.run(["docker", "kill", container_name], capture_output=True)
-                last_return_code = -1
+            outcome = run_probe(
+                docker_cmd, container_name=container_name,
+                jsonl_file=jsonl_f, stderr_file=stderr_f,
+                timeout_seconds=DEPTH_TIMEOUT_SECONDS,
+            )
+            if progress is not None:
+                progress.finish_probe(elapsed_seconds=outcome.elapsed_seconds)
+
+            last_return_code = outcome.returncode
+            if outcome.timed_out:
                 stop_reason = (
                     f"depth {depth} timed out after {DEPTH_TIMEOUT_SECONDS}s "
                     f"(likely OOM/thrashing rather than a clean error); "
                     f"skipping larger depths"
                 )
-                stderr_f.write(f"\n[TIMEOUT after {DEPTH_TIMEOUT_SECONDS}s - container killed]\n")
-                stderr_f.flush()
                 print(f"    TIMEOUT at depth={depth} after {DEPTH_TIMEOUT_SECONDS}s "
                       f"(container killed); skipping remaining "
                       f"{len(sorted_depths) - i - 1} larger depth(s)", flush=True)
                 if progress is not None:
                     progress.prune(len(sorted_depths) - i - 1, "this series timed out at a shallower depth")
-            finally:
-                _ACTIVE_CONTAINERS.discard(container_name)
+            elif outcome.returncode != 0:
+                stop_reason = (
+                    f"depth {depth} failed (rc={outcome.returncode}); "
+                    f"skipping larger depths"
+                )
+                print(f"    FAILED at depth={depth} (rc={outcome.returncode}); "
+                      f"skipping remaining {len(sorted_depths) - i - 1} larger depth(s)",
+                      flush=True)
                 if progress is not None:
-                    progress.finish_probe(elapsed_seconds=time.monotonic() - probe_started_at)
+                    progress.prune(len(sorted_depths) - i - 1, "this series failed at a shallower depth")
+            else:
+                depths_run.append(depth)
 
             if stop_reason is None and i < len(sorted_depths) - 1:
                 time.sleep(DEPTH_COOLDOWN_SECONDS)
@@ -905,156 +872,27 @@ def main() -> None:
         )
         progress.start(detail=progress_detail)
 
-        results: list[RunResult] = []
-        tuning_log: list[dict] = []
-
-        if args.full_sweep:
-            tuning_ncmoe = (moe or {}).get("block_count") or 0
-            if tuning_ncmoe:
-                print(f"  MoE model: auto-tuning with --n-cpu-moe={tuning_ncmoe} "
-                      "so KV/ubatch/batch probes do not OOM before the MoE curve runs", flush=True)
-            config = auto_tune(
-                image=args.image, gpu_gids=gpu_gids, model=model, device=args.device,
-                depths=depths, results_dir=model_results_dir, cooldown=args.cooldown,
-                log=tuning_log, n_cpu_moe=tuning_ncmoe, progress=progress,
-            )
-            print(f"  full-sweep winner: {config.tag()}", flush=True)
-        elif args.calibrate:
-            print("  calibration (legacy): sweeping ubatch candidates on prefill series", flush=True)
-            for ubatch in UBATCH_CANDIDATES:
-                cfg = BenchConfig(ubatch=ubatch)
-                print(f"  [prefill calibration {cfg.tag()}]", flush=True)
-                result = run_one(
-                    image=args.image, gpu_gids=gpu_gids, host_model_path=model,
-                    series="prefill", config=cfg, device=args.device,
-                    depths=depths, results_dir=model_results_dir, progress=progress,
-                )
-                results.append(result)
-                print(f"    {result.status} (rc={result.return_code})", flush=True)
-                time.sleep(args.cooldown)
-            chosen_ubatch = pick_best_ubatch(model_results_dir, str(model), list(UBATCH_CANDIDATES))
-            config = BenchConfig(ubatch=chosen_ubatch)
-            print(f"  calibration winner: ub={chosen_ubatch}", flush=True)
-        else:
-            config = BenchConfig(
-                ubatch=args.ubatch or 2048,
-                batch=args.batch or 2048,
-                ctk=args.ctk or "f16",
-                ctv=args.ctv or args.ctk or "f16",
-                flash_attn=args.flash_attn or "auto",
-            ).validate()
-            print(f"  using fixed config: {config.tag()}", flush=True)
-
-        moe_offload_result = None
-        # `--full-sweep` is the recommended/default tuning path, so a
-        # detected MoE gets the cheap five-point curve automatically.
-        # Thorough is explicit because it does more probes; it takes
-        # precedence if both flags happen to be supplied.
-        run_moe_sweep = moe is not None and (
-            args.full_sweep or args.sweep_moe_offload or args.sweep_moe_offload_thorough
-        )
-        if moe is not None and run_moe_sweep:
-            block_count = moe["block_count"]
-            if not block_count:
-                print("  WARNING: MoE model but no *.block_count in GGUF metadata; "
-                      "skipping --n-cpu-moe sweep", flush=True)
-            else:
-                thorough = args.sweep_moe_offload_thorough
-                print(f"  MoE model detected: expert_count={moe['expert_count']} "
-                      f"expert_used_count={moe['expert_used_count']} block_count={block_count}", flush=True)
-                print(f"  sweeping --n-cpu-moe ({'thorough/binary-search' if thorough else 'quick/fixed-candidates'})", flush=True)
-                sweep_fn = sweep_moe_offload_thorough if thorough else sweep_moe_offload_quick
-                moe_offload_result = sweep_fn(
-                    image=args.image, gpu_gids=gpu_gids, model=model, base_config=config,
-                    device=args.device, depths=depths, block_count=block_count,
-                    results_dir=model_results_dir, cooldown=args.cooldown, progress=progress,
-                )
-                moe_offload_result["expert_count"] = moe["expert_count"]
-                moe_offload_result["expert_used_count"] = moe["expert_used_count"]
-                moe_offload_result["block_count"] = block_count
-        elif moe is not None:
-            print(f"  MoE model detected (expert_count={moe['expert_count']}) but "
-                  f"--sweep-moe-offload not given; skipping the --n-cpu-moe sweep. Every "
-                  f"expert stays resident in VRAM regardless of expert_used_count - see "
-                  f"README's MoE section.", flush=True)
-
-        for series in ("prefill", "generation"):
-            print(f"  [{series} {config.tag()}]", flush=True)
-            result = run_one(
-                image=args.image, gpu_gids=gpu_gids, host_model_path=model,
-                series=series, config=config, device=args.device,
-                depths=depths, results_dir=model_results_dir, progress=progress,
-            )
-            results.append(result)
-            print(f"    {result.status} (rc={result.return_code})", flush=True)
-            time.sleep(args.cooldown)
-
-        summary_path = model_results_dir / "curve_summary.csv"
-        rows = write_curve_summary(results, summary_path)
-        failed = [r for r in results if r.status == "failed"]
-        partial = [r for r in results if r.status == "partial"]
-        mode = "full-sweep" if args.full_sweep else ("calibrate-legacy" if args.calibrate else "fixed")
-        completed_at = datetime.now(timezone.utc).isoformat()
-
-        manifest = build_campaign_manifest(
-            image=args.image,
-            device=args.device,
-            depths=depths,
-            context_length=max_ctx,
-            final_config=asdict(config),
-            tuning_log=tuning_log,
-            moe_offload_curve=moe_offload_result,
+        run_model_campaign(
+            image=args.image, gpu_gids=gpu_gids, device=args.device, model=model,
+            results_root=args.results_root, run_id=run_id, env=env,
+            config=CampaignConfig(
+                full_sweep=args.full_sweep, calibrate=args.calibrate,
+                sweep_moe_offload=args.sweep_moe_offload,
+                sweep_moe_offload_thorough=args.sweep_moe_offload_thorough,
+                max_depth=args.max_depth, ubatch=args.ubatch, batch=args.batch,
+                ctk=args.ctk, ctv=args.ctv, flash_attn=args.flash_attn,
+                cooldown=args.cooldown, force=args.force,
+            ),
+            gguf_metadata=gguf_metadata, moe=moe, depths=depths, max_ctx=max_ctx,
+            progress=progress,
+            bench_config_cls=BenchConfig, run_one=run_one, auto_tune=auto_tune,
+            pick_best_ubatch=pick_best_ubatch,
+            sweep_moe_offload_quick=sweep_moe_offload_quick,
+            sweep_moe_offload_thorough=sweep_moe_offload_thorough,
+            model_slug=slug, ubatch_candidates=UBATCH_CANDIDATES,
+            prefill_tokens=PREFILL_TOKENS, generation_tokens=GENERATION_TOKENS,
             repetitions=REPETITIONS,
-            prefill_tokens=PREFILL_TOKENS,
-            generation_tokens=GENERATION_TOKENS,
-            mode=mode,
-            completed_at=completed_at,
-            summary_rows=rows,
-            run_summaries=[
-                {
-                    "series": r.series, "config": asdict(r.config), "status": r.status,
-                    "return_code": r.return_code, "depths_run": list(r.depths_run),
-                    "depths_skipped": list(r.depths_skipped), "stop_reason": r.stop_reason,
-                }
-                for r in results
-            ],
         )
-        write_json(model_results_dir / "campaign_manifest.json", manifest)
-
-        best_depth0_ts = None
-        gen_rows = [r for r in results if r.series == "generation"]
-        if gen_rows:
-            ts = mean_ts(gen_rows[0].jsonl_path)
-            best_depth0_ts = ts if ts >= 0 else None
-
-        metadata = build_run_metadata(
-            model_slug=slug,
-            model_filename=model.name,
-            model_architecture=gguf_metadata.get("general.architecture"),
-            model_name=gguf_metadata.get("general.name"),
-            model_context_length=max_ctx,
-            model_moe=moe,
-            run_id=run_id,
-            run_completed_at=completed_at,
-            mode=mode,
-            environment=env,
-            final_config=asdict(config),
-            depths_tested=depths,
-            generation_tok_s_mean=best_depth0_ts,
-            status="failed" if failed else ("partial" if partial else "finished"),
-        )
-        write_json(model_results_dir / "metadata.json", metadata)
-
-        write_status_marker(model_results_dir, failed=bool(failed), partial=bool(partial))
-
-        print(f"  Curve summary: {summary_path} ({rows} rows)", flush=True)
-        if failed:
-            for r in failed:
-                print(f"  FAILED: {r.model} {r.series} {r.config.tag()} (see {r.stderr_path})", flush=True)
-        if partial:
-            for r in partial:
-                print(f"  PARTIAL: {r.model} {r.series} {r.config.tag()}: {r.stop_reason} "
-                      f"(ran depths {list(r.depths_run)}, skipped {list(r.depths_skipped)})", flush=True)
 
     any_failed = False
     any_partial = False
