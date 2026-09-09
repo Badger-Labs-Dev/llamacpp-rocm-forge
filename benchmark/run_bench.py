@@ -76,18 +76,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gguf_info import moe_params, read_gguf_metadata
-from bench_app.adapters.outbound.campaign_store import load_jsonl_rows, mean_ts
-from bench_app.adapters.outbound.docker_llama_bench import (
+from adapters.outbound.campaign_store import load_jsonl_rows, mean_ts
+from adapters.outbound.docker_llama_bench import (
     LlamaBenchProbe,
     docker_command as build_docker_command,
     llama_bench_command,
 )
-from bench_app.adapters.outbound.docker_runner import (
+from adapters.outbound.docker_runner import (
     kill_active_containers,
     new_container_name,
     run_probe,
 )
-from bench_app.adapters.outbound.model_resolution import (
+from adapters.outbound.model_resolution import (
     COMMON_CONTEXT_SIZES,
     LEGACY_FIXED_DEPTHS,
     derive_depths_for_model as _derive_depths_for_model,
@@ -95,19 +95,20 @@ from bench_app.adapters.outbound.model_resolution import (
     model_slug,
     resolve_model_reference,
 )
-from bench_app.application.run_campaign import CampaignConfig, run_model_campaign
-from bench_app.domain.moe_bisection import (
+from application.run_campaign import CampaignConfig, run_model_campaign
+from domain.moe_bisection import (
     extra_throughput_samples,
     resolve_boundary,
 )
-from bench_app.domain.planning import (
+from domain.planning import (
     campaign_budget,
     quick_moe_candidates,
     thorough_max_probes_per_depth,
 )
-import environment_info
+from adapters.outbound import rocm_environment as environment_info
 import hf_models
-from progress_tracker import ProgressTracker
+from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
+from domain.progress import ProbeProgress
 
 UBATCH_CANDIDATES = (256, 512, 1024, 2048)
 BATCH_CANDIDATES = (512, 1024, 2048, 4096)
@@ -182,7 +183,7 @@ class RunResult:
 
 # Names of docker containers currently running a benchmark, so they can be
 # force-killed if this script is interrupted (Ctrl-C, SIGTERM, an unhandled
-# exception). See bench_app.adapters.outbound.docker_runner for the actual
+# exception). See adapters.outbound.docker_runner for the actual
 # tracking/kill mechanics; this module just wires signal/atexit handlers to
 # it.
 def _install_cleanup_handlers() -> None:
@@ -867,8 +868,7 @@ def main() -> None:
         moe = moe_params(gguf_metadata)
         max_probes, progress_detail = planned_probe_count(args, depths, moe)
         progress = ProgressTracker(
-            total_probes=max_probes,
-            expected_gap_seconds=DEPTH_COOLDOWN_SECONDS,
+            ProbeProgress(total_probes=max_probes, expected_gap_seconds=DEPTH_COOLDOWN_SECONDS),
         )
         progress.start(detail=progress_detail)
 

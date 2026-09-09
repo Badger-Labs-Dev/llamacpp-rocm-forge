@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from bench_app.adapters.outbound.campaign_store import (
+from adapters.outbound.campaign_store import (
     build_campaign_manifest,
     build_run_metadata,
     mean_ts,

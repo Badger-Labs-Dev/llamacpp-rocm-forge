@@ -43,7 +43,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** Deep contract check mirroring bench_app.application.viewer_dataset on
+/** Deep contract check mirroring application.viewer_dataset on
  * the Python side: schema-valid-but-unrenderable payloads (e.g. an empty
  * {} moe_offload_curve, or a tuning_log entry with no scores) must fail
  * here rather than reach chart code as an unchecked `as ResultsFile`. */

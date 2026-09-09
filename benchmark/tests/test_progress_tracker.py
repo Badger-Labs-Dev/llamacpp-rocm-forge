@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 
 import run_bench
-from bench_app.adapters.outbound.campaign_store import write_curve_summary
+from adapters.outbound.campaign_store import write_curve_summary
+from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
+from domain.progress import ProbeProgress
 from generate_viewer_data import depth0_throughput, read_curve
-from progress_tracker import ProgressTracker
 from run_bench import BenchConfig, RunResult, planned_probe_count, sweep_moe_offload_quick
 
 
@@ -17,10 +18,9 @@ class ProgressTrackerTests(unittest.TestCase):
         clock = [0.0]
         output = io.StringIO()
         tracker = ProgressTracker(
-            total_probes=10,
+            ProbeProgress(total_probes=10, expected_gap_seconds=2),
             output=output,
             clock=lambda: clock[0],
-            expected_gap_seconds=2,
         )
 
         tracker.before_probe("MoE depth=8192 ncmoe=10")
@@ -39,7 +39,7 @@ class ProgressTrackerTests(unittest.TestCase):
 
     def test_does_not_prune_below_completed_work(self):
         output = io.StringIO()
-        tracker = ProgressTracker(total_probes=2, output=output)
+        tracker = ProgressTracker(ProbeProgress(total_probes=2), output=output)
         tracker.finish_probe(elapsed_seconds=1)
         tracker.prune(99, "defensive clamp")
 
@@ -49,7 +49,7 @@ class ProgressTrackerTests(unittest.TestCase):
         self.assertEqual(snapshot.remaining, 0)
         self.assertEqual(snapshot.current_total, 1)
     def test_quick_moe_sweep_prunes_unreachable_deeper_depths(self):
-        tracker = ProgressTracker(total_probes=15, output=io.StringIO())
+        tracker = ProgressTracker(ProbeProgress(total_probes=15), output=io.StringIO())
         original_probe = run_bench.probe_moe_offload
 
         def fake_probe(**kwargs):

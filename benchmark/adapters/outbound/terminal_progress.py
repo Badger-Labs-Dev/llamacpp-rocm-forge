@@ -6,7 +6,7 @@ import sys
 import time
 from typing import Callable, TextIO
 
-from bench_app.domain.progress import ProbeProgress, ProgressSnapshot
+from domain.progress import ProbeProgress, ProgressSnapshot
 
 
 class TerminalProgressReporter:

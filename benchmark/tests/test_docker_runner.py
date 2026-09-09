@@ -5,8 +5,8 @@ import subprocess
 import unittest
 from unittest import mock
 
-from bench_app.adapters.outbound import docker_runner
-from bench_app.adapters.outbound.docker_runner import (
+from adapters.outbound import docker_runner
+from adapters.outbound.docker_runner import (
     ProbeOutcome,
     kill_active_containers,
     new_container_name,

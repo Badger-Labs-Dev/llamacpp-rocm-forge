@@ -1,10 +1,10 @@
 import unittest
 
-from bench_app.adapters.outbound.docker_llama_bench import LlamaBenchProbe, docker_command
-from bench_app.adapters.outbound.model_resolution import model_slug
-from bench_app.application.viewer_dataset import SCHEMA_VERSION, validate_viewer_dataset
-from bench_app.domain.planning import campaign_budget, quick_moe_candidates
-from bench_app.domain.progress import ProbeProgress
+from adapters.outbound.docker_llama_bench import LlamaBenchProbe, docker_command
+from adapters.outbound.model_resolution import model_slug
+from application.viewer_dataset import SCHEMA_VERSION, validate_viewer_dataset
+from domain.planning import campaign_budget, quick_moe_candidates
+from domain.progress import ProbeProgress
 
 
 class BenchmarkApplicationTests(unittest.TestCase):

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import run_bench
-from bench_app.adapters.outbound import docker_runner
+from adapters.outbound import docker_runner
 from run_bench import BenchConfig, auto_tune, run_one
 
 
@@ -161,7 +161,7 @@ class MainCharacterizationTests(unittest.TestCase):
     """End-to-end run of main() with a fixed config, mocking Docker,
     environment inspection, and argv - locks down the exact manifest/
     metadata.json shape written to disk so the filesystem-persistence
-    extraction (bench_app.adapters.outbound.campaign_store) can be graded
+    extraction (adapters.outbound.campaign_store) can be graded
     against it."""
 
     def test_fixed_config_ok_run_completes_without_exit_and_writes_files(self):

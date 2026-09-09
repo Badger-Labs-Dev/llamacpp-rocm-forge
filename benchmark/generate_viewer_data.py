@@ -21,7 +21,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bench_app.application.viewer_dataset import SCHEMA_VERSION, validate_viewer_dataset
+from application.viewer_dataset import SCHEMA_VERSION, validate_viewer_dataset
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = SCRIPT_DIR.parent / "results"

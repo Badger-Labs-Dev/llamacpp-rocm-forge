@@ -88,5 +88,5 @@ def extra_throughput_samples(
     the "how hard does throughput dive as I offload more" curve - a thin
     re-export of the planning module's spacing rule so callers driving
     resolve_boundary() don't need a second import for the related step."""
-    from bench_app.domain.planning import thorough_extra_candidates
+    from domain.planning import thorough_extra_candidates
     return thorough_extra_candidates(boundary, block_count, sample_count)

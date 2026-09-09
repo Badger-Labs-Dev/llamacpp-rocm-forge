@@ -2,7 +2,7 @@
 
 import unittest
 
-from bench_app.domain.moe_bisection import extra_throughput_samples, resolve_boundary
+from domain.moe_bisection import extra_throughput_samples, resolve_boundary
 
 
 def drive(gen, fits_by_ncmoe: dict[int, bool]):
@@ -67,7 +67,7 @@ class ExtraThroughputSamplesTests(unittest.TestCase):
     def test_delegates_to_planning_module_spacing_rule(self):
         # Cross-check against the same values planning.thorough_extra_candidates
         # would produce directly, since this is a thin re-export.
-        from bench_app.domain.planning import thorough_extra_candidates
+        from domain.planning import thorough_extra_candidates
         self.assertEqual(
             extra_throughput_samples(boundary=10, block_count=40, sample_count=3),
             thorough_extra_candidates(10, 40, 3),
