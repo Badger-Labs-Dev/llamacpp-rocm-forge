@@ -1,0 +1,7 @@
+2026-09-10T11:49:30-04:00
+WARNING: AMD GPU device(s) is/are in a low-power state. Check power control/runtime_status
+
+device,VRAM Total Memory (B),VRAM Total Used Memory (B),Card Series,Card Model,Card Vendor,Card SKU,Subsystem ID,Device Rev,Node ID,GUID,GFX Version
+card0,34208743424,2582265856,AMD Radeon AI PRO R9700,0x7551,Advanced Micro Devices Inc. [AMD/ATI],G287BP00,0x0626,0xc0,1,32448,gfx1201
+card1,2147483648,235364352,AMD Ryzen 5 9600X 6-Core Processor,0x13c0,Advanced Micro Devices Inc. [AMD/ATI],RAPHAEL,0x364e,0xc6,2,29100,gfx1036
+

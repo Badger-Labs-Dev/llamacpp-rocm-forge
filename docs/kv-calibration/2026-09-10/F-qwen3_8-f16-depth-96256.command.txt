@@ -1,0 +1,4 @@
+# timestamp: 2026-09-10T11:49:44-04:00
+# image: llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench
+# model blob: /home/wilsonrm/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/blobs/493301830a596b8ad56dc1329f80bbcb578c8e910da395feafdc9cd8263430bb
+# command: timeout --signal=TERM 300s docker run --rm --name kvcal-F-qwen3_8-f16-depth-96256-21874 --device /dev/dri --device /dev/kfd --group-add 983 --group-add 987 --security-opt seccomp=unconfined --ipc=host -v /home/wilsonrm/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/blobs:/models:ro llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench llama-bench -v -m /models/493301830a596b8ad56dc1329f80bbcb578c8e910da395feafdc9cd8263430bb -o jsonl -oe jsonl -r 1 -b 2048 -ub 2048 -ngl 0 -nkvo 0 -fa auto -ctk f16 -ctv f16 -dev ROCm0 -d 96256 -p 2048 -n 0 --progress
