@@ -1,20 +1,21 @@
-"""Application use case: auto-tune the KV-cache dtype at the fixed runtime
-configuration.
+"""Application use case: select the KV-cache dtype/depth to run final
+curves at, using the pure per-dtype depth plan from
+domain.kv_depth_planner.
 
-Extracted from run_bench.py's probe_depths()/probe_config()/auto_tune().
-Depends on application.run_curve.run_one() for the actual probe
-execution, and domain.models.BenchConfig for the configuration model.
+Depends on application.run_curve.run_one() (via the injected ``probe``
+callable) for the actual probe execution, and domain.models.BenchConfig
+for the configuration model. Supersedes the old two-point auto_tune()
+KV-dtype probe, which treated every non-f16-deepest failure as fatal
+before q4/q8 got a chance (see KV-CACHE-REFACTOR-05).
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from adapters.outbound.campaign_store import mean_ts
-from application.run_curve import ProgressTracker, run_one
 from domain.kv_depth_planner import KV_CACHE_TYPES, DtypeDepthPlan, KvDepthPlan
 from domain.models import BenchConfig, RunResult
 
@@ -60,6 +61,11 @@ def select_kv_config(
             }
             probe_records.append(record)
             all_probe_records.append(record)
+            # mean_throughput uses -1.0 as its own "no usable rows" sentinel
+            # (see adapters.outbound.campaign_store.mean_ts) even when the
+            # probe's own status is "ok" (e.g. an empty JSONL) - reject that
+            # the same way as an unsuccessful probe rather than letting a
+            # negative throughput win a comparison.
             if score is not None and score >= 0:
                 successes.append((score, config, dtype_plan))
         if successes:
@@ -71,84 +77,3 @@ def select_kv_config(
                 probes=tuple(all_probe_records),
             )
     return None
-
-
-def probe_depths(depths: tuple[int, ...]) -> tuple[int, ...]:
-    """Reduce a full depth list to a cheap 2-point probe: shallowest + deepest.
-
-    Used during auto-tuning stages, where we need *some* signal at both a
-    cold cache and a full one (KV-cache-quantization benefits scale with
-    depth, so testing depth 0 alone would underrate it) without paying for
-    every depth in the model's full curve.
-    """
-    if len(depths) <= 2:
-        return depths
-    return (depths[0], depths[-1])
-
-
-def probe_config(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    config: BenchConfig,
-    device: str,
-    depths: tuple[int, ...],
-    results_dir: Path,
-    progress: ProgressTracker | None = None,
-) -> float:
-    """Run a quick prefill-only probe of one config; return mean avg_ts."""
-    result = run_one(
-        image=image, gpu_gids=gpu_gids, host_model_path=model,
-        series="prefill", config=config.validate(), device=device,
-        depths=depths, results_dir=results_dir, subdir="tuning", progress=progress,
-    )
-    if result.status != "ok":
-        return -1.0
-    return mean_ts(result.jsonl_path)
-
-
-def auto_tune(
-    *,
-    image: str,
-    gpu_gids: list[str],
-    model: Path,
-    device: str,
-    depths: tuple[int, ...],
-    results_dir: Path,
-    cooldown: int,
-    log: list[dict],
-    n_cpu_moe: int = 0,
-    block_count: int | None = None,
-    n_cpu_layers: int = 0,
-    progress: ProgressTracker | None = None,
-) -> BenchConfig:
-    """Tune KV cache dtype at fixed batch=2048, ubatch=2048, and
-    flash-attn=auto. Each dtype probes at the shallowest and deepest depth
-    rather than the full curve. For a MoE full-sweep, n_cpu_moe is
-    conservatively set to block_count so the KV probes can evaluate their
-    intended knob without an unrelated high-context MoE OOM; the separate
-    MoE curve later measures every candidate with the winning base config.
-    """
-    probe_d = probe_depths(depths)
-    print(f"  auto-tune: probing at depths {list(probe_d)}", flush=True)
-
-    # Stage 1: KV cache dtype, flash-attn always "auto" (quantized KV
-    # cache requires FA regardless, and validate() enforces that).
-    print("  [KV cache dtype] fixed batch=2048 ubatch=2048", flush=True)
-    kv_scores = {}
-    for kv in KV_CACHE_TYPES:
-        cfg = BenchConfig(ubatch=2048, batch=2048, ctk=kv, ctv=kv, n_cpu_moe=n_cpu_moe,
-                          block_count=block_count, n_cpu_layers=n_cpu_layers).validate()
-        score = probe_config(image=image, gpu_gids=gpu_gids, model=model, config=cfg,
-                             device=device, depths=probe_d, results_dir=results_dir, progress=progress)
-        kv_scores[kv] = score
-        print(f"    kv={kv}: mean_ts={score:.1f}", flush=True)
-        time.sleep(cooldown)
-    best_kv = max(kv_scores, key=lambda k: kv_scores[k])
-    log.append({"stage": "kv_cache_dtype", "scores": kv_scores, "winner": best_kv})
-    print(f"  KV cache dtype winner: kv={best_kv}", flush=True)
-
-    return BenchConfig(ubatch=2048, batch=2048, ctk=best_kv, ctv=best_kv,
-                       n_cpu_moe=n_cpu_moe, block_count=block_count,
-                       n_cpu_layers=n_cpu_layers).validate()

@@ -91,7 +91,6 @@ def run_model_campaign(
     # BenchConfig/run_one/auto_tune/etc. import cycle.
     bench_config_cls,
     run_one,
-    auto_tune,
     sweep_moe_offload_quick,
     sweep_moe_offload_thorough,
     preflight_dense_offload,
@@ -115,26 +114,10 @@ def run_model_campaign(
     tuning_log: list[dict] = []
 
     # In the absence of calibration-grade placement/reserve evidence, every
-    # feasibility result is deliberately unknown/runnable. Tests and future
-    # calibration wiring may supply a more precise plan, but this use case
-    # never invents static exclusions from runtime failures.
-    kv_depth_plan = kv_depth_plan or build_kv_depth_plan(
-        requested_depths=depths,
-        prefill_tokens=prefill_tokens,
-        metadata=gguf_metadata,
-        kv_offload_enabled=None,
-        kv_placement=None,
-        gpu_vram_bytes=env.get("gpu_vram_bytes"),
-        runtime_scope=None,
-        reserve_policy=None,
-    )
-    for dtype_plan in kv_depth_plan.dtype_plans:
-        print(
-            f"  KV plan {dtype_plan.ctk}: runnable={list(dtype_plan.runnable_depths)} "
-            f"excluded={[item.context_size - prefill_tokens for item in dtype_plan.exclusions]}",
-            flush=True,
-        )
-
+    # feasibility result is deliberately unknown/runnable (see package
+    # 01/02: kv_placement=None and reserve_policy=None until calibration
+    # evidence lands). Only computed for the default flow - --quick never
+    # consults the plan, so building/logging it there would be misleading.
     dense_offload_result = None
     dense_capacity_failed = False
     final_depths = depths
@@ -145,18 +128,35 @@ def run_model_campaign(
         ).validate()
         print(f"  --quick: using fixed config {bench_config.tag()}", flush=True)
     else:
+        kv_depth_plan = kv_depth_plan or build_kv_depth_plan(
+            requested_depths=depths,
+            prefill_tokens=prefill_tokens,
+            metadata=gguf_metadata,
+            kv_offload_enabled=None,
+            kv_placement=None,
+            gpu_vram_bytes=env.get("gpu_vram_bytes"),
+            runtime_scope=None,
+            reserve_policy=None,
+        )
+        for dtype_plan in kv_depth_plan.dtype_plans:
+            print(
+                f"  KV plan {dtype_plan.ctk}: runnable={list(dtype_plan.runnable_depths)} "
+                f"excluded={[item.context_size - prefill_tokens for item in dtype_plan.exclusions]}",
+                flush=True,
+            )
+
         tuning_ncmoe = (moe or {}).get("block_count") or 0
 
-        def probe_selected_dtype(candidate_config, depth):
-            candidate_config = replace(
-                candidate_config,
+        def probe_selected_dtype(candidate, depth):
+            resolved_config = replace(
+                candidate,
                 n_cpu_moe=tuning_ncmoe,
                 block_count=dense_block_count,
                 n_cpu_layers=0,
             ).validate()
             return run_one(
                 image=image, gpu_gids=gpu_gids, host_model_path=model,
-                series="prefill", config=candidate_config, device=device,
+                series="prefill", config=resolved_config, device=device,
                 depths=(depth,), results_dir=model_results_dir, subdir="tuning",
                 progress=progress,
             )
@@ -297,7 +297,7 @@ def run_model_campaign(
         result = run_one(
             image=image, gpu_gids=gpu_gids, host_model_path=model,
             series=series, config=bench_config, device=device,
-            depths=depths, results_dir=model_results_dir, progress=progress,
+            depths=final_depths, results_dir=model_results_dir, progress=progress,
         )
         results.append(result)
         print(f"    {result.status} (rc={result.return_code})", flush=True)

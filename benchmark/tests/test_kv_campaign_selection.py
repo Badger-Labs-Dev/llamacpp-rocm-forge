@@ -81,5 +81,23 @@ class KvCampaignSelectionTests(unittest.TestCase):
         self.assertEqual(selection.target_depth, 0)
 
 
+    def test_ok_status_with_negative_sentinel_throughput_is_not_a_success(self):
+        # mean_throughput can return the -1.0 "no usable rows" sentinel even
+        # when the probe status is "ok" (e.g. an empty JSONL); it must not
+        # win a comparison against a genuinely-scored success.
+        def probe(config, depth):
+            return SimpleNamespace(status="ok", jsonl_path=Path(config.ctk))
+
+        scores = {"q4_0": -1.0, "q8_0": 10.0, "f16": -1.0}
+        selection = select_kv_config(
+            plan=_plan(q4=(0,), q8=(0,), f16=(0,)),
+            probe=probe,
+            mean_throughput=lambda path: scores[path.name],
+        )
+
+        self.assertIsNotNone(selection)
+        self.assertEqual(selection.config.ctk, "q8_0")
+
+
 if __name__ == "__main__":
     unittest.main()

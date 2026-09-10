@@ -13,8 +13,11 @@ context_length can't be read.
 Model type (dense vs MoE) is auto-detected from GGUF *.expert_count -
 there is nothing to configure. Two modes, no in-between:
 
-  (default)  Auto-tune KV cache dtype at fixed ubatch=2048, batch=2048,
-             (application/auto_tune.py). Dense models map the exact --ngl
+  (default)  Select the KV cache dtype/depth to run at, from a static
+             per-dtype depth plan (domain/kv_depth_planner.py) probed
+             q4_0 -> q8_0 -> f16 in coverage-first, then-throughput order
+             (application/auto_tune.py's select_kv_config) at fixed
+             ubatch=2048, batch=2048. Dense models map the exact --ngl
              boundary per depth; detected MoE models also
              binary-searches the exact --n-cpu-moe boundary per depth
              (application/moe_sweep.py's thorough sweep). This is the
@@ -59,10 +62,6 @@ from adapters.outbound.model_resolution import (
     resolve_model_reference,
 )
 from adapters.outbound.terminal_progress import TerminalProgressReporter as ProgressTracker
-from application.auto_tune import (
-    auto_tune,
-    probe_depths,
-)
 from application.dense_sweep import (
     DENSE_QUICK_EXTRA_SAMPLE_COUNT,
     preflight_dense_offload,
@@ -82,11 +81,11 @@ from application.run_curve import (
     run_one,
 )
 from application.run_campaign import CampaignConfig, run_model_campaign
+from domain.kv_depth_planner import KV_CACHE_TYPES
 from domain.models import BenchConfig
 from domain.planning import campaign_budget
 from domain.progress import ProbeProgress
 
-KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
 COOLDOWN_SECONDS = 10
 
 
@@ -115,12 +114,19 @@ def planned_probe_count(
     moe: dict | None,
     dense_block_count: int | None = None,
 ) -> tuple[int, str]:
-    """CLI adapter around the domain campaign-budget calculation."""
+    """CLI adapter around the domain campaign-budget calculation.
+
+    Non-quick KV selection (application.auto_tune.select_kv_config) probes
+    per requested depth (deepest first), up to all 3 canonical dtypes,
+    stopping at the first depth with any success. The conservative worst
+    case - nothing succeeds anywhere - is 3 dtypes x every requested depth,
+    not the old 2-point-probe x 3-dtype auto-tune budget.
+    """
     budget = campaign_budget(
         depth_count=len(depths),
         quick=args.quick,
         kv_type_count=len(KV_CACHE_TYPES),
-        tuning_depth_count=len(probe_depths(depths)),
+        tuning_depth_count=len(depths),
         moe_block_count=(moe or {}).get("block_count"),
         quick_candidate_count=MOE_QUICK_CANDIDATE_COUNT,
         thorough_extra_sample_count=MOE_EXTRA_SAMPLE_COUNT,
@@ -268,7 +274,7 @@ def main() -> None:
             model_size_bytes=total_model_size_bytes(model),
             depths=depths, max_ctx=max_ctx,
             progress=progress,
-            bench_config_cls=BenchConfig, run_one=run_one, auto_tune=auto_tune,
+            bench_config_cls=BenchConfig, run_one=run_one,
             sweep_moe_offload_quick=sweep_moe_offload_quick,
             sweep_moe_offload_thorough=sweep_moe_offload_thorough,
             preflight_dense_offload=preflight_dense_offload,

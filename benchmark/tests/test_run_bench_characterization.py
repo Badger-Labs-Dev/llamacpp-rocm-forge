@@ -14,11 +14,10 @@ from unittest import mock
 
 import run_bench
 from adapters.outbound import docker_runner
-from application import auto_tune as auto_tune_module
 from application import moe_sweep as moe_sweep_module
 from application import run_campaign as run_campaign_module
 from application import run_curve as run_curve_module
-from run_bench import BenchConfig, auto_tune, run_one
+from run_bench import BenchConfig, run_one
 
 
 class FakeCompletedProcess:
@@ -129,40 +128,6 @@ class RunOneCharacterizationTests(unittest.TestCase):
         self.assertEqual(result.depths_run, ())
 
 
-class AutoTuneCharacterizationTests(unittest.TestCase):
-    def test_tunes_only_kv_dtype_at_the_fixed_runtime_configuration(self):
-        # probe_config() is auto_tune()'s public collaborator seam. Its
-        # captured calls specify the tuning contract without invoking Docker.
-        calls = []
-
-        def fake_probe_config(*, config, **kwargs):
-            calls.append((config, kwargs["depths"]))
-            return {"f16": 100.0, "q8_0": 200.0, "q4_0": 50.0}[config.ctk]
-
-        log: list[dict] = []
-        with mock.patch.object(auto_tune_module, "probe_config", side_effect=fake_probe_config), \
-             mock.patch.object(auto_tune_module.time, "sleep"):
-            config = auto_tune(
-                image="unused", gpu_gids=[], model=Path("model.gguf"), device="ROCm0",
-                depths=(0, 4096), results_dir=Path("/tmp/unused"), cooldown=0, log=log,
-            )
-
-        self.assertEqual(config.ctk, "q8_0")
-        self.assertEqual(config.ctv, "q8_0")
-        self.assertEqual((config.ubatch, config.batch), (2048, 2048))
-        self.assertEqual(len(calls), 3)
-        self.assertEqual({candidate.ctk for candidate, _ in calls}, {"f16", "q8_0", "q4_0"})
-        self.assertTrue(all(
-            (candidate.ubatch, candidate.batch, depths) == (2048, 2048, (0, 4096))
-            for candidate, depths in calls
-        ))
-        self.assertEqual(log, [{
-            "stage": "kv_cache_dtype",
-            "scores": {"f16": 100.0, "q8_0": 200.0, "q4_0": 50.0},
-            "winner": "q8_0",
-        }])
-
-
 class MainCharacterizationTests(unittest.TestCase):
     """End-to-end run of main() with a fixed config, mocking Docker,
     environment inspection, and argv - locks down the exact manifest/
@@ -256,7 +221,7 @@ class MainCharacterizationTests(unittest.TestCase):
                 moe=None, dense_block_count=1, model_size_bytes=1,
                 depths=(0, 2048), max_ctx=4096, progress=progress_mock,
                 bench_config_cls=BenchConfig, run_one=run_one_mock,
-                auto_tune=mock.Mock(), sweep_moe_offload_quick=mock.Mock(),
+                sweep_moe_offload_quick=mock.Mock(),
                 sweep_moe_offload_thorough=mock.Mock(),
                 preflight_dense_offload=mock.Mock(return_value=None),
                 sweep_dense_offload=mock.Mock(return_value={

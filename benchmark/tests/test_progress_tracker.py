@@ -80,11 +80,13 @@ class ProgressTrackerTests(unittest.TestCase):
 
         total, detail = planned_probe_count(args, depths=(0, 2048, 6144), moe={"block_count": 40})
 
-        # 3 KV types × 2 probe depths at the fixed 2048/2048 configuration,
-        # then 3 depths × (2 endpoint checks + ceil(log2(41)) bisection
-        # probes + up to 4 throughput samples), then 2 final series × 3 depths.
-        self.assertEqual(total, 48)
-        self.assertEqual(detail, "6 tuning, 36 thorough MoE, 6 final curves")
+        # 3 KV types × 3 requested depths at the fixed 2048/2048
+        # configuration (select_kv_config's conservative worst case: no
+        # depth ever succeeds), then 3 depths × (2 endpoint checks +
+        # ceil(log2(41)) bisection probes + up to 4 throughput samples),
+        # then 2 final series × 3 depths.
+        self.assertEqual(total, 51)
+        self.assertEqual(detail, "9 tuning, 36 thorough MoE, 6 final curves")
 
     def test_curve_summary_preserves_ok_status_for_a_depth_that_ran_before_a_later_failure(self):
         # Regression test: a "partial" series (deeper depth failed/timed out)
