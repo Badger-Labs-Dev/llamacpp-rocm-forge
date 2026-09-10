@@ -1,6 +1,6 @@
 # llamacpp-rocm-forge
 
-Build llama.cpp Docker images against any ROCm + llama.cpp version combination, and benchmark them. Currently targets AMD Radeon AI PRO R9700 (`gfx1201`) on Ubuntu 26.04; started as a pure benchmarking tool but the build side ([docs/building.md](docs/building.md)) turned out valuable on its own — it's now also how correctly-tagged `bench`/`server`/`light` images get produced for other uses (e.g. an always-on `llama-server` deployment elsewhere, see [homelab-llm-router](https://github.com/rayjanwilson/homelab-llm-router)).
+Build llama.cpp Docker images against any ROCm + llama.cpp version combination, and benchmark them. Currently targets AMD Radeon AI PRO R9700 (`gfx1201`) on Ubuntu 26.04; started as a pure benchmarking tool, but the build side ([docs/building.md](docs/building.md)) turned out valuable on its own. It's now also how correctly-tagged `bench`/`server`/`light` images get produced for other uses (e.g. an always-on `llama-server` deployment elsewhere, see [homelab-llm-router](https://github.com/rayjanwilson/homelab-llm-router)).
 
 The build adapts [AMD's official ROCm 10.0.0 install docs](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=radeon&w=compute&gpu=amd-radeon-ai-pro-r9700&gfx=gfx1201&os=ubuntu&ubuntu-ver=26.04&i=pkgman) (apt packages) and [llama.cpp's own official ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (build structure); see [docs/building.md](docs/building.md#where-this-build-comes-from) for specifics.
 
