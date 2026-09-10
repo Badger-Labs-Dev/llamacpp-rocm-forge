@@ -33,8 +33,8 @@ from adapters.outbound.campaign_store import (
     write_json,
     write_status_marker,
 )
-from application.auto_tune import select_kv_config
-from domain.kv_depth_planner import build_kv_depth_plan
+from application.auto_tune import kv_selection_tuning_log_entry, select_kv_config
+from domain.kv_depth_planner import build_kv_depth_plan, build_kv_feasibility_manifest_payload
 
 
 @dataclass(frozen=True)
@@ -112,6 +112,7 @@ def run_model_campaign(
 
     results: list = []
     tuning_log: list[dict] = []
+    kv_feasibility_payload: dict | None = None
 
     # In the absence of calibration-grade placement/reserve evidence, every
     # feasibility result is deliberately unknown/runnable (see package
@@ -144,6 +145,12 @@ def run_model_campaign(
                 f"excluded={[item.context_size - prefill_tokens for item in dtype_plan.exclusions]}",
                 flush=True,
             )
+        kv_feasibility_payload = build_kv_feasibility_manifest_payload(
+            kv_depth_plan,
+            fixed_runtime_config={
+                "batch": 2048, "ubatch": 2048, "flash_attn": "auto", "no_kv_offload": False,
+            },
+        )["kv_feasibility"]
 
         tuning_ncmoe = (moe or {}).get("block_count") or 0
 
@@ -174,15 +181,7 @@ def run_model_campaign(
                 n_cpu_layers=0,
             ).validate()
             final_depths = selection.runnable_depths
-            tuning_log.append({
-                "stage": "kv_cache_dtype",
-                "selection": {
-                    "target_depth": selection.target_depth,
-                    "winner": selection.config.ctk,
-                    "runnable_depths": list(selection.runnable_depths),
-                    "probes": list(selection.probes),
-                },
-            })
+            tuning_log.append(kv_selection_tuning_log_entry(selection))
             print(
                 f"  KV selection: depth={selection.target_depth} "
                 f"winner={bench_config.ctk} runnable={list(final_depths)}",
@@ -334,6 +333,7 @@ def run_model_campaign(
             }
             for r in results
         ],
+        kv_feasibility=kv_feasibility_payload,
     )
     write_json(model_results_dir / "campaign_manifest.json", manifest)
 

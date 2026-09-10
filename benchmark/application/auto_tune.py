@@ -77,3 +77,35 @@ def select_kv_config(
                 probes=tuple(all_probe_records),
             )
     return None
+
+
+def kv_selection_tuning_log_entry(selection: KvSelection) -> dict[str, object]:
+    """Publish a ``select_kv_config`` result as a legacy-shaped tuning_log
+    entry: ``{"stage", "scores", "winner"}``.
+
+    The pre-KV-CACHE-REFACTOR viewer contract (application/viewer_dataset.py's
+    _check_tuning_stage, viewer/src/domain/sensitivity.ts) only understands
+    that shape - not KvSelection's own probes/target_depth record. Only the
+    *final target depth's* probes are one comparable set (see
+    select_kv_config's depth-then-throughput selection): scores from a
+    shallower depth a dtype was never probed at would misrepresent that
+    dtype as untested-and-worst rather than not-part-of-this-comparison, so
+    probes at any other depth are intentionally excluded here. A probe that
+    didn't succeed is scored with the same -1.0 "no usable rows" sentinel
+    ``select_kv_config``/``mean_ts`` already use, never ``None`` - the
+    viewer's sensitivity math requires every candidate to be a finite
+    number and treats negative scores as simply non-comparable, not
+    missing.
+    """
+    scores = {
+        record["ctk"]: (
+            record["avg_ts"] if record["status"] == "ok" and record["avg_ts"] is not None else -1.0
+        )
+        for record in selection.probes
+        if record["depth"] == selection.target_depth
+    }
+    return {
+        "stage": "kv_cache_dtype",
+        "scores": scores,
+        "winner": selection.config.ctk,
+    }

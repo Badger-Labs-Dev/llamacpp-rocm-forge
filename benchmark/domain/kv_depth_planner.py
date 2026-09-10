@@ -148,3 +148,55 @@ def candidate_dtype_depth_targets(plan: KvDepthPlan) -> tuple[tuple[str, int], .
         for dtype_plan in plan.dtype_plans
         for depth in dtype_plan.runnable_depths
     )
+
+
+def _exclusion_payload(result: KvFeasibility, *, prefill_tokens: int) -> dict[str, object]:
+    """One static-exclusion record, keyed by benchmark depth rather than
+    the allocated context size, so manifest consumers never have to
+    re-derive ``depth = context_size - prefill_tokens`` themselves (see
+    KV-CACHE-REFACTOR-06's manifest requirement to record benchmark depth
+    and allocated context size separately)."""
+    payload = asdict(result)
+    payload["benchmark_depth"] = result.context_size - prefill_tokens
+    return payload
+
+
+def _dtype_plan_manifest_payload(dtype_plan: DtypeDepthPlan, *, prefill_tokens: int) -> dict[str, object]:
+    return {
+        "runnable_depths": list(dtype_plan.runnable_depths),
+        "eligible_depths": list(dtype_plan.eligible_depths),
+        "unknown_depths": list(dtype_plan.unknown_depths),
+        "excluded_depths": [
+            result.context_size - prefill_tokens for result in dtype_plan.exclusions
+        ],
+        "exclusions": [
+            _exclusion_payload(result, prefill_tokens=prefill_tokens)
+            for result in dtype_plan.exclusions
+        ],
+    }
+
+
+def build_kv_feasibility_manifest_payload(
+    plan: KvDepthPlan, *, fixed_runtime_config: Mapping[str, object],
+) -> dict[str, object]:
+    """Pure, manifest-ready serialization of a ``KvDepthPlan``.
+
+    Matches the ``kv_feasibility`` shape documented in
+    KV-CACHE-REFACTOR-06-ARTIFACTS-STATUS-DOCS.md: preserves original
+    requested depths, records the fixed runtime config and canonical dtype
+    order used for planning, and gives every static exclusion exact byte
+    accounting keyed by benchmark depth. Never performs I/O.
+    """
+    return {
+        "requested_depths": list(plan.requested_depths),
+        "kv_feasibility": {
+            "fixed_runtime_config": dict(fixed_runtime_config),
+            "candidate_dtype_order": list(KV_CACHE_TYPES),
+            "per_dtype": {
+                dtype_plan.ctk: _dtype_plan_manifest_payload(
+                    dtype_plan, prefill_tokens=plan.prefill_tokens,
+                )
+                for dtype_plan in plan.dtype_plans
+            },
+        },
+    }

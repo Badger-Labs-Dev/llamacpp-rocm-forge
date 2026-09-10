@@ -8,19 +8,35 @@ The run ID is version-based: `rocm<version>_llamacpp<build-number>`. It intentio
 
 By default the driver stages a search rather than testing exhaustively:
 
-1. KV-cache dtype: `f16`, `q8_0`, and `q4_0`, at the shallowest and deepest selected depths.
-2. A valid ubatch × batch grid, using the selected KV dtype at depth 0.
+1. A static, per-KV-dtype context-depth feasibility plan (`benchmark/domain/kv_feasibility.py`, `kv_depth_planner.py`) built before any Docker probe runs. It can statically **exclude** a `(KV dtype, depth)` pair only from an exact, GPU-resident KV-cache byte calculation plus a validated runtime reserve; anything the static model cannot prove stays `unknown` and remains runnable. This never truncates the campaign's depth list globally - exclusion is always dtype-specific, so q4/q8 can still probe a depth f16 was excluded from.
+2. Runtime KV-cache dtype/depth selection: candidate `(dtype, depth)` pairs are probed in `q4_0` -> `q8_0` -> `f16` order, deepest depth first, at the fixed `batch=2048, ubatch=2048` configuration - never the old ubatch/batch grid. Coverage wins over throughput: the search descends through depths until at least one dtype completes that depth, and only completions at the *same* depth compete on measured throughput.
 3. The winning configuration over the full depth curve, for both prefill and generation.
+
+There is no independent ubatch x batch grid anymore, and no batch/ubatch fallback ladder if a probe fails - see [KV-cache feasibility refactor](../KV-CACHE-REFACTOR-00-OVERVIEW.md) for the full design rationale. `campaign_manifest.json`'s `kv_feasibility` field (present whenever the default mode ran) records the fixed runtime config, the canonical `q4_0`/`q8_0`/`f16` probing order, and every dtype's `runnable_depths`/`eligible_depths`/`unknown_depths`/`excluded_depths` with exact byte accounting for each exclusion. `tuning_log`'s `kv_cache_dtype` stage still publishes the legacy `{stage, scores, winner}` shape the viewer's sensitivity chart expects, scored only from probes at the final selected target depth.
 
 For a dense model, the driver performs a real full-offload probe at the deepest selected depth before tuning. If it fails, an exact bisection finds a safe `--ngl` for tuning. After tuning, a per-depth dense sweep finds each maximum fitting `--ngl`; additional lower values are sampled only when at least one depth needs CPU offload. The final ordinary depth curve uses the deepest-depth-safe `--ngl` at every depth, so depth remains the only changing variable.
 
-A full independent grid would be 4 ubatch values × 4 batch values × 3 KV dtypes, before multiplying by depths and repetitions. The staged search is cheaper and records every tested score in `campaign_manifest.json`'s `tuning_log`, so a later viewer can show what mattered and how much.
-
-Flash attention stays at llama.cpp's `-fa auto` in both modes. That lets the backend select the fused path only when the model and kernel support it. Quantized KV cache types still force flash attention on when llama.cpp requires it.
-
 For an MoE model, auto-tune uses fully CPU-offloaded experts while tuning and for its ordinary full-depth curve. This keeps an unrelated expert-weight allocation from making a deep KV-cache probe fail before the dedicated MoE sweep can map the actual context-versus-offload trade-off. See [MoE expert offload](moe-offload.md).
 
-`--quick` skips auto-tuning: it uses fixed `ubatch=2048, batch=2048, ctk/ctv=f16, fa=auto`. Dense models still get an exact `--ngl` boundary per depth because fit correctness is not a tuning-quality option; if offload is needed, only one extra CPU-offload throughput point is sampled.
+`--quick` skips auto-tuning: it uses fixed `ubatch=2048, batch=2048, ctk/ctv=f16, fa=auto`. It never consults the KV feasibility plan (`kv_feasibility` is `null` in a `--quick` run's manifest). Dense models still get an exact `--ngl` boundary per depth because fit correctness is not a tuning-quality option; if offload is needed, only one extra CPU-offload throughput point is sampled.
+
+## Static exclusion vs. unknown vs. runtime failure
+
+These are four distinct things and the manifest keeps them distinct:
+
+- **Statically excluded** (`kv_feasibility.per_dtype.<dtype>.excluded_depths`/`exclusions`): an exact GPU-resident KV-cache byte calculation plus a validated runtime reserve proves the allocation cannot fit. No Docker probe ever runs for that `(dtype, depth)` pair. Only the supported dense/`llama` architecture handler with exact metadata and a scope-matched reserve can produce this; anything else stays `unknown`.
+- **Unknown** (`kv_feasibility.per_dtype.<dtype>.unknown_depths`): the static model cannot prove or disprove feasibility (unsupported architecture, missing metadata, unvalidated reserve, or `-nkvo` placement uncertainty). Unknown depths remain runnable and are still probed at runtime - the static model is never entitled to prune them.
+- **Runtime allocation failure / timeout / configuration error**: a real probe ran and did not succeed. This is evidence about *this run*, not a fact fed back into the static planner - a timeout at one depth/dtype never marks a different depth or dtype as statically excluded.
+- **Omitted static depth vs. a completed measurement**: an excluded depth never appears in `curve_summary.csv` as a zero-throughput row, and the viewer must never render it as if it were a completed point at 0 tok/s. It is absent from the curve and present only in `kv_feasibility`'s exclusion record.
+
+## Campaign status semantics
+
+- **`finished`**: every planned runnable depth for the selected dtype completed. This includes campaigns with static exclusions - a larger depth being statically excluded for the winning dtype does not, by itself, make a campaign anything other than `finished` once every depth that *was* planned for that dtype completes.
+- **`partial`**: a runtime probe/curve stopped after some lower depth's work already completed successfully.
+- **`failed`**: no configuration completed the required baseline work (e.g. no KV dtype/depth probe ever succeeded, or the deepest requested dense `--ngl` search found nothing that fits).
+- `campaign.finished`/`.partial`/`.failed` (the on-disk marker), `metadata.json`'s `status`, `campaign_manifest.json`, and the console summary always agree - they are all derived from the same `failed`/`partial` booleans in `run_model_campaign()`.
+
+Flash attention stays at llama.cpp's `-fa auto` in both modes. That lets the backend select the fused path only when the model and kernel support it. Quantized KV cache types still force flash attention on when llama.cpp requires it.
 
 ## Context depths come from the GGUF
 

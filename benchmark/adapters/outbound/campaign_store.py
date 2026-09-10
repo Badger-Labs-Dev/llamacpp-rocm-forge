@@ -98,6 +98,7 @@ def build_campaign_manifest(
     completed_at: str,
     summary_rows: int,
     run_summaries: list[dict],
+    kv_feasibility: dict | None = None,
 ) -> dict:
     """Pure construction of campaign_manifest.json's contents.
 
@@ -105,6 +106,12 @@ def build_campaign_manifest(
     return_code/depths_run/depths_skipped/stop_reason) - keeping this
     module's only dependency on RunResult's *shape*, not the BenchConfig/
     dataclass types themselves.
+
+    ``kv_feasibility`` is the additive static KV depth-planning record from
+    domain.kv_depth_planner.build_kv_feasibility_manifest_payload() (see
+    KV-CACHE-REFACTOR-06): ``None`` for --quick campaigns, which never
+    consult the plan. It is a new field alongside the existing ones, never
+    a replacement for ``depths``/``final_config``/``tuning_log``.
     """
     return {
         "image": image,
@@ -122,6 +129,7 @@ def build_campaign_manifest(
         "completed_at": completed_at,
         "summary_rows": summary_rows,
         "runs": run_summaries,
+        "kv_feasibility": kv_feasibility,
     }
 
 

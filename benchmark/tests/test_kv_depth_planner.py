@@ -5,6 +5,7 @@ from domain.kv_depth_planner import (
     KV_CACHE_TYPES,
     KvDepthPlan,
     build_kv_depth_plan,
+    build_kv_feasibility_manifest_payload,
     candidate_dtype_depth_targets,
     deepest_runnable_depth,
 )
@@ -107,6 +108,58 @@ class KvDepthPlannerTests(unittest.TestCase):
         plan = self.plan(requested_depths=(10, 10))
         self.assertEqual(plan.requested_depths, (10, 10))
         self.assertEqual(plan.dtype_plans[0].runnable_depths, (10, 10))
+
+
+class KvFeasibilityManifestPayloadTests(unittest.TestCase):
+    """WP06: pure, manifest-ready serialization of a KvDepthPlan, following
+    the shape documented in KV-CACHE-REFACTOR-06-ARTIFACTS-STATUS-DOCS.md."""
+
+    def plan(self, **overrides):
+        inputs = dict(
+            requested_depths=(10, 20), prefill_tokens=2, metadata=DENSE_METADATA,
+            kv_offload_enabled=True, kv_placement="gpu", gpu_vram_bytes=15_000,
+            runtime_scope=SCOPE, reserve_policy=RESERVE,
+        )
+        inputs.update(overrides)
+        return build_kv_depth_plan(**inputs)
+
+    def test_payload_records_fixed_config_dtype_order_and_per_dtype_accounting(self):
+        plan = self.plan()
+        fixed_runtime_config = {
+            "batch": 2048, "ubatch": 2048, "flash_attn": "auto", "no_kv_offload": False,
+        }
+
+        payload = build_kv_feasibility_manifest_payload(
+            plan, fixed_runtime_config=fixed_runtime_config,
+        )
+
+        self.assertEqual(payload["requested_depths"], [10, 20])
+        feasibility = payload["kv_feasibility"]
+        self.assertEqual(feasibility["fixed_runtime_config"], fixed_runtime_config)
+        self.assertEqual(feasibility["candidate_dtype_order"], ["q4_0", "q8_0", "f16"])
+        f16 = feasibility["per_dtype"]["f16"]
+        self.assertEqual(f16["runnable_depths"], [10])
+        self.assertEqual(f16["eligible_depths"], [10])
+        self.assertEqual(f16["unknown_depths"], [])
+        self.assertEqual(f16["excluded_depths"], [20])
+        self.assertEqual(len(f16["exclusions"]), 1)
+        self.assertEqual(f16["exclusions"][0]["benchmark_depth"], 20)
+        self.assertEqual(f16["exclusions"][0]["context_size"], 22)
+        self.assertEqual(f16["exclusions"][0]["required_gpu_bytes"], 17_216)
+        q4 = feasibility["per_dtype"]["q4_0"]
+        self.assertEqual(q4["excluded_depths"], [])
+        self.assertEqual(q4["exclusions"], [])
+
+    def test_payload_is_json_serializable(self):
+        import json
+
+        payload = build_kv_feasibility_manifest_payload(
+            self.plan(),
+            fixed_runtime_config={
+                "batch": 2048, "ubatch": 2048, "flash_attn": "auto", "no_kv_offload": False,
+            },
+        )
+        json.dumps(payload)  # must not raise
 
 
 if __name__ == "__main__":

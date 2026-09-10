@@ -200,6 +200,7 @@ class MainCharacterizationTests(unittest.TestCase):
                     "tuning_log", "moe_offload_curve", "dense_offload_curve",
                     "repetitions", "prefill_tokens",
                     "generation_tokens", "mode", "completed_at", "summary_rows", "runs",
+                    "kv_feasibility",
                 },
             )
             self.assertTrue((run_dir / "campaign.finished").exists())
