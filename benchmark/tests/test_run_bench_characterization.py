@@ -258,7 +258,7 @@ class MainCharacterizationTests(unittest.TestCase):
                 bench_config_cls=BenchConfig, run_one=run_one_mock,
                 auto_tune=mock.Mock(), sweep_moe_offload_quick=mock.Mock(),
                 sweep_moe_offload_thorough=mock.Mock(),
-                preflight_dense_offload=mock.Mock(),
+                preflight_dense_offload=mock.Mock(return_value=None),
                 sweep_dense_offload=mock.Mock(return_value={
                     "mode": "quick", "block_count": 1, "max_gpu_layers": 2,
                     "final_ngl": None, "offload_needed": True, "by_depth": [],

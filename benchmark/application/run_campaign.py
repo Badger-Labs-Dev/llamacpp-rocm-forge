@@ -33,6 +33,8 @@ from adapters.outbound.campaign_store import (
     write_json,
     write_status_marker,
 )
+from application.auto_tune import select_kv_config
+from domain.kv_depth_planner import build_kv_depth_plan
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,7 @@ def run_model_campaign(
     prefill_tokens: int,
     generation_tokens: int,
     repetitions: int,
+    kv_depth_plan=None,
 ) -> CampaignOutcome:
     """Run tuning (or, in --quick mode, a fixed config), the MoE offload
     sweep for a detected MoE model (thorough bisection, or the cheap
@@ -111,8 +114,31 @@ def run_model_campaign(
     results: list = []
     tuning_log: list[dict] = []
 
+    # In the absence of calibration-grade placement/reserve evidence, every
+    # feasibility result is deliberately unknown/runnable. Tests and future
+    # calibration wiring may supply a more precise plan, but this use case
+    # never invents static exclusions from runtime failures.
+    kv_depth_plan = kv_depth_plan or build_kv_depth_plan(
+        requested_depths=depths,
+        prefill_tokens=prefill_tokens,
+        metadata=gguf_metadata,
+        kv_offload_enabled=None,
+        kv_placement=None,
+        gpu_vram_bytes=env.get("gpu_vram_bytes"),
+        runtime_scope=None,
+        reserve_policy=None,
+    )
+    for dtype_plan in kv_depth_plan.dtype_plans:
+        print(
+            f"  KV plan {dtype_plan.ctk}: runnable={list(dtype_plan.runnable_depths)} "
+            f"excluded={[item.context_size - prefill_tokens for item in dtype_plan.exclusions]}",
+            flush=True,
+        )
+
     dense_offload_result = None
     dense_capacity_failed = False
+    final_depths = depths
+    selection = None
     if config.quick:
         bench_config = bench_config_cls(
             ubatch=2048, batch=2048, ctk="f16", ctv="f16", flash_attn="auto",
@@ -120,49 +146,72 @@ def run_model_campaign(
         print(f"  --quick: using fixed config {bench_config.tag()}", flush=True)
     else:
         tuning_ncmoe = (moe or {}).get("block_count") or 0
-        tuning_ngl = 99
-        if tuning_ncmoe:
-            print(f"  MoE model: auto-tuning with --n-cpu-moe={tuning_ncmoe} "
-                  "so fixed-config KV probes do not OOM before the MoE curve runs", flush=True)
-        elif dense_block_count:
-            print(
-                "  Dense model: resolving a deepest-depth-safe --ngl before auto-tuning",
-                flush=True,
-            )
-            preflight_ngl = preflight_dense_offload(
-                image=image,
-                gpu_gids=gpu_gids,
-                model=model,
-                base_config=bench_config_cls().validate(),
-                device=device,
-                depth=depths[-1],
+
+        def probe_selected_dtype(candidate_config, depth):
+            candidate_config = replace(
+                candidate_config,
+                n_cpu_moe=tuning_ncmoe,
                 block_count=dense_block_count,
-                results_dir=model_results_dir,
-                cooldown=config.cooldown,
-                metadata=gguf_metadata,
-                model_size_bytes=model_size_bytes,
-                gpu_vram_bytes=env.get("gpu_vram_bytes") or 0,
+                n_cpu_layers=0,
+            ).validate()
+            return run_one(
+                image=image, gpu_gids=gpu_gids, host_model_path=model,
+                series="prefill", config=candidate_config, device=device,
+                depths=(depth,), results_dir=model_results_dir, subdir="tuning",
                 progress=progress,
             )
-            if preflight_ngl is None:
-                tuning_ngl = 0
-                print(
-                    "  dense preflight: f16 did not fit even at --ngl=0; "
-                    "auto-tuning at --ngl=0 to test smaller KV caches",
-                    flush=True,
-                )
-            else:
-                tuning_ngl = preflight_ngl
-                print(f"  dense preflight: auto-tuning with --ngl={tuning_ngl}", flush=True)
-        bench_config = auto_tune(
-            image=image, gpu_gids=gpu_gids, model=model, device=device,
-            depths=depths, results_dir=model_results_dir, cooldown=config.cooldown,
-            log=tuning_log, n_cpu_moe=tuning_ncmoe,
-            block_count=dense_block_count,
-            n_cpu_layers=((dense_block_count + 1) - tuning_ngl) if dense_block_count else 0,
-            progress=progress,
+
+        selection = select_kv_config(plan=kv_depth_plan, probe=probe_selected_dtype)
+        if selection is None:
+            dense_capacity_failed = True
+            bench_config = bench_config_cls().validate()
+            print("  FAILED: no planned KV dtype/depth probe completed", flush=True)
+        else:
+            bench_config = replace(
+                selection.config,
+                n_cpu_moe=tuning_ncmoe,
+                block_count=dense_block_count,
+                n_cpu_layers=0,
+            ).validate()
+            final_depths = selection.runnable_depths
+            tuning_log.append({
+                "stage": "kv_cache_dtype",
+                "selection": {
+                    "target_depth": selection.target_depth,
+                    "winner": selection.config.ctk,
+                    "runnable_depths": list(selection.runnable_depths),
+                    "probes": list(selection.probes),
+                },
+            })
+            print(
+                f"  KV selection: depth={selection.target_depth} "
+                f"winner={bench_config.ctk} runnable={list(final_depths)}",
+                flush=True,
+            )
+
+    if not dense_capacity_failed and moe is None and dense_block_count:
+        preflight_depth = max(final_depths)
+        final_ngl = preflight_dense_offload(
+            image=image, gpu_gids=gpu_gids, model=model, base_config=bench_config,
+            device=device, depth=preflight_depth, block_count=dense_block_count,
+            results_dir=model_results_dir, cooldown=config.cooldown,
+            metadata=gguf_metadata, model_size_bytes=model_size_bytes,
+            gpu_vram_bytes=env.get("gpu_vram_bytes") or 0, progress=progress,
         )
-        print(f"  auto-tune winner: {bench_config.tag()}", flush=True)
+        if final_ngl is None:
+            # The selected dtype may still have lower runnable depths. The full
+            # dense sweep below retains those measurements rather than letting a
+            # failed deepest preflight erase the entire campaign.
+            print(
+                f"  dense preflight: {bench_config.ctk} did not fit at depth={preflight_depth}; "
+                "checking lower planned depths",
+                flush=True,
+            )
+        else:
+            bench_config = replace(
+                bench_config, block_count=dense_block_count,
+                n_cpu_layers=(dense_block_count + 1) - final_ngl,
+            ).validate()
 
     moe_offload_result = None
     if moe is not None:
@@ -178,7 +227,7 @@ def run_model_campaign(
             sweep_fn = sweep_moe_offload_thorough if thorough else sweep_moe_offload_quick
             moe_offload_result = sweep_fn(
                 image=image, gpu_gids=gpu_gids, model=model, base_config=bench_config,
-                device=device, depths=depths, block_count=block_count,
+                device=device, depths=final_depths, block_count=block_count,
                 results_dir=model_results_dir, cooldown=config.cooldown, progress=progress,
             )
             moe_offload_result["expert_count"] = moe["expert_count"]
@@ -197,7 +246,7 @@ def run_model_campaign(
             model=model,
             base_config=bench_config,
             device=device,
-            depths=depths,
+            depths=final_depths,
             block_count=dense_block_count,
             results_dir=model_results_dir,
             cooldown=config.cooldown,

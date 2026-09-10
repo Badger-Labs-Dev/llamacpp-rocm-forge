@@ -65,9 +65,9 @@ class KvDepthPlan:
         }
 
 
-def _positive_ints(values: tuple[int, ...], *, field: str) -> tuple[int, ...]:
-    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in values):
-        raise ValueError(f"{field} must contain positive integers")
+def _non_negative_ints(values: tuple[int, ...], *, field: str) -> tuple[int, ...]:
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
+        raise ValueError(f"{field} must contain non-negative integers")
     return values
 
 
@@ -87,7 +87,7 @@ def build_kv_depth_plan(
     ``requested_depths`` are benchmark depths. The feasibility API receives the
     distinct llama.cpp allocation size ``depth + prefill_tokens`` exactly once.
     """
-    requested_depths = _positive_ints(tuple(requested_depths), field="requested_depths")
+    requested_depths = _non_negative_ints(tuple(requested_depths), field="requested_depths")
     if (not isinstance(prefill_tokens, int) or isinstance(prefill_tokens, bool)
             or prefill_tokens < 0):
         raise ValueError("prefill_tokens must be a non-negative integer")

@@ -143,6 +143,22 @@ class DenseSweepTests(unittest.TestCase):
         ))
         self.assertEqual(curve["by_depth"][1]["results"], [])
 
+    def test_failed_deepest_depth_keeps_lower_fitting_final_ngl(self):
+        def fake_probe(**kwargs):
+            return kwargs["depth"] == 0, 1.0
+
+        with mock.patch.object(dense_sweep, "probe_dense_offload", side_effect=fake_probe), \
+             mock.patch.object(dense_sweep.time, "sleep"):
+            curve = dense_sweep.sweep_dense_offload(
+                image="unused", gpu_gids=[], model=Path("model.gguf"),
+                base_config=BenchConfig(), device="ROCm0", depths=(0, 2048),
+                block_count=4, results_dir=Path("/tmp/unused"), cooldown=0,
+                metadata={}, model_size_bytes=1, gpu_vram_bytes=1,
+            )
+
+        self.assertEqual(curve["final_ngl"], 5)
+        self.assertEqual(curve["by_depth"][1]["max_ngl_that_fits"], None)
+
     def test_preflight_returns_safe_ngl_for_deepest_context_without_extra_samples(self):
         probes: list[int] = []
 

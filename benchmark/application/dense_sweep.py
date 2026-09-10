@@ -358,7 +358,11 @@ def sweep_dense_offload(
             "dense offload discovery resolved below its conservative bound",
         )
 
-    deepest_ngl = by_depth[-1]["max_ngl_that_fits"] if by_depth else None
+    deepest_ngl = next(
+        (point["max_ngl_that_fits"] for point in reversed(by_depth)
+         if point["max_ngl_that_fits"] is not None),
+        None,
+    )
     return {
         "mode": "quick" if quick else "thorough",
         "block_count": block_count,

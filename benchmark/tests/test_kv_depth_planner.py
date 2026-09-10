@@ -97,9 +97,12 @@ class KvDepthPlannerTests(unittest.TestCase):
         self.assertEqual(plan.dtype_plans[-1].eligible_depths, (10,))
         self.assertEqual(plan.dtype_plans[-1].assessments[0].context_size, 13)
 
-    def test_invalid_depths_are_rejected_and_duplicate_requested_depths_are_preserved(self):
-        with self.assertRaisesRegex(ValueError, "positive integers"):
-            self.plan(requested_depths=(10, 0))
+    def test_negative_depths_are_rejected_and_duplicate_requested_depths_are_preserved(self):
+        with self.assertRaisesRegex(ValueError, "non-negative integers"):
+            self.plan(requested_depths=(10, -1))
+
+        zero_depth_plan = self.plan(requested_depths=(0,))
+        self.assertEqual(zero_depth_plan.requested_depths, (0,))
 
         plan = self.plan(requested_depths=(10, 10))
         self.assertEqual(plan.requested_depths, (10, 10))

@@ -9,13 +9,68 @@ execution, and domain.models.BenchConfig for the configuration model.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from adapters.outbound.campaign_store import mean_ts
 from application.run_curve import ProgressTracker, run_one
-from domain.models import BenchConfig
+from domain.kv_depth_planner import KV_CACHE_TYPES, DtypeDepthPlan, KvDepthPlan
+from domain.models import BenchConfig, RunResult
 
-KV_CACHE_TYPES = ("f16", "q8_0", "q4_0")
+
+@dataclass(frozen=True)
+class KvSelection:
+    """The deepest successful cache dtype and its planned curve envelope."""
+
+    config: BenchConfig
+    target_depth: int
+    runnable_depths: tuple[int, ...]
+    probes: tuple[dict[str, object], ...]
+
+
+def select_kv_config(
+    *,
+    plan: KvDepthPlan,
+    probe: Callable[[BenchConfig, int], RunResult],
+    mean_throughput: Callable[[Path], float] = mean_ts,
+) -> KvSelection | None:
+    """Select by depth coverage first, then measured throughput.
+
+    For each requested runnable depth, highest first, probe canonical cache
+    dtypes in q4 -> q8 -> f16 order. Only successful probes at the same depth
+    compete on throughput; an unsuccessful result remains runtime evidence and
+    does not modify the static plan.
+    """
+    dtype_by_name = {dtype_plan.ctk: dtype_plan for dtype_plan in plan.dtype_plans}
+    all_probe_records: list[dict[str, object]] = []
+    for depth in sorted({depth for item in plan.dtype_plans for depth in item.runnable_depths}, reverse=True):
+        successes: list[tuple[float, BenchConfig, DtypeDepthPlan]] = []
+        probe_records: list[dict[str, object]] = []
+        for ctk in KV_CACHE_TYPES:
+            dtype_plan = dtype_by_name.get(ctk)
+            if dtype_plan is None or depth not in dtype_plan.runnable_depths:
+                continue
+            config = BenchConfig(batch=2048, ubatch=2048, ctk=ctk, ctv=ctk).validate()
+            result = probe(config, depth)
+            score = mean_throughput(result.jsonl_path) if result.status == "ok" else None
+            record = {
+                "depth": depth, "ctk": ctk, "ctv": ctk,
+                "status": result.status, "avg_ts": score,
+            }
+            probe_records.append(record)
+            all_probe_records.append(record)
+            if score is not None and score >= 0:
+                successes.append((score, config, dtype_plan))
+        if successes:
+            score, config, dtype_plan = max(successes, key=lambda candidate: candidate[0])
+            return KvSelection(
+                config=config,
+                target_depth=depth,
+                runnable_depths=dtype_plan.runnable_depths,
+                probes=tuple(all_probe_records),
+            )
+    return None
 
 
 def probe_depths(depths: tuple[int, ...]) -> tuple[int, ...]:
