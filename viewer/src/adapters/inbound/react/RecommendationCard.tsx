@@ -14,10 +14,19 @@ function sensitivityNote(bar: SensitivityBar | undefined): string {
 
 export function RecommendationCard({ config, tuningLog }: Props) {
   const byStage = Object.fromEntries(sensitivityBars(tuningLog).map((bar) => [bar.stage, bar]));
+  const hasLegacyBatchTuning = tuningLog.some((stage) =>
+    Object.keys(stage.scores).some((candidate) => /^ub\d+_b\d+$/.test(candidate)),
+  );
   const rows = [
     { label: "Flash attention", value: config.flash_attn, note: "— not swept; llama.cpp selection or a KV-cache requirement." },
     { label: "KV cache dtype", value: `${config.ctk} / ${config.ctv}`, note: sensitivityNote(byStage.kv_cache_dtype) },
-    { label: "ubatch × batch", value: `${config.ubatch} × ${config.batch}`, note: sensitivityNote(byStage.ubatch_batch_grid) },
+    {
+      label: "ubatch × batch",
+      value: `${config.ubatch} × ${config.batch}`,
+      note: hasLegacyBatchTuning
+        ? "— selected through the historical batch/ubatch tuning grid."
+        : "— fixed at 2048 × 2048; not auto-tuned.",
+    },
     {
       label: "GPU layers / --ngl",
       value: String(config.gpu_layers),

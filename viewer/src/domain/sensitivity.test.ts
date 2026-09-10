@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { impactForSwing, stageSensitivity } from "./sensitivity";
 
-const stage = (scores: Record<string, number>) => ({ stage: "test", scores, winner: "a" });
+const stage = (scores: Record<string, number>, name = "test") => ({ stage: name, scores, winner: "a" });
 
 describe("stageSensitivity", () => {
   it("ignores negative failed-probe sentinels", () => {
@@ -14,6 +14,10 @@ describe("stageSensitivity", () => {
 
   it("handles ties deterministically", () => {
     expect(stageSensitivity(stage({ a: 100, b: 100 }))).toMatchObject({ bestLabel: "a", worstLabel: "a", swingPct: 0 });
+  });
+
+  it("renders an unknown historical stage name readably", () => {
+    expect(stageSensitivity(stage({ a: 100, b: 80 }, "legacy_grid"))?.label).toBe("legacy grid");
   });
 
   it("marks a positive result over a zero baseline as non-comparable, not unbounded", () => {

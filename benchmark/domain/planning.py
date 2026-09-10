@@ -55,7 +55,6 @@ def campaign_budget(
     *,
     depth_count: int,
     quick: bool,
-    valid_batch_pairs: int,
     kv_type_count: int,
     tuning_depth_count: int,
     moe_block_count: int | None,
@@ -66,7 +65,7 @@ def campaign_budget(
 ) -> ProbeBudget:
     parts: list[tuple[str, int]] = []
     if not quick:
-        parts.append(("tuning", kv_type_count * tuning_depth_count + valid_batch_pairs))
+        parts.append(("tuning", kv_type_count * tuning_depth_count))
 
     if moe_block_count:
         count = (

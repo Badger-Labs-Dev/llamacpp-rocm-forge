@@ -20,7 +20,7 @@ Every command below uses `uv run`; activating `.venv` manually is unnecessary.
 
 ### 2. Run a model
 
-Model type (dense vs MoE) is auto-detected. By default, the driver runs the full staged auto-tune (KV-cache dtype, then the ubatch/batch pair), maps the per-depth offload boundary (`--ngl` for dense models or `--n-cpu-moe` for MoE), then benchmarks one fixed winning configuration across the model's supported context depths:
+Model type (dense vs MoE) is auto-detected. By default, the driver tunes only KV-cache dtype at the fixed `batch=2048`, `ubatch=2048`, `flash_attn=auto` configuration, maps the per-depth offload boundary (`--ngl` for dense models or `--n-cpu-moe` for MoE), then benchmarks one fixed winning configuration across the model's supported context depths:
 
 ```bash
 uv run benchmark/run_bench.py \
@@ -61,7 +61,7 @@ results/
       campaign_manifest.json
       curve_summary.csv
       *.jsonl / *.stderr.log
-      tuning/                 # full-sweep probes, when present
+      tuning/                 # fixed-config KV-cache dtype probes, when present
       moe-tuning/             # MoE probes, when present
 ```
 

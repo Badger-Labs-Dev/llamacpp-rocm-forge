@@ -130,18 +130,14 @@ class RunOneCharacterizationTests(unittest.TestCase):
 
 
 class AutoTuneCharacterizationTests(unittest.TestCase):
-    def test_stages_pick_the_highest_scoring_candidate_and_carry_it_forward(self):
-        # probe_config() is the seam auto_tune() calls per candidate; fake
-        # scores make kv=q8_0 win stage 1 and ub=512/b=1024 win stage 2,
-        # then assert those propagate into the final BenchConfig and the
-        # winner is recorded correctly per stage in the tuning log.
+    def test_tunes_only_kv_dtype_at_the_fixed_runtime_configuration(self):
+        # probe_config() is auto_tune()'s public collaborator seam. Its
+        # captured calls specify the tuning contract without invoking Docker.
+        calls = []
+
         def fake_probe_config(*, config, **kwargs):
-            if config.ubatch == 2048 and config.batch == 2048 and config.n_cpu_moe == 0:
-                # Stage 1 (KV sweep) holds ubatch/batch at BenchConfig
-                # defaults; score by ctk so q8_0 wins.
-                return {"f16": 100.0, "q8_0": 200.0, "q4_0": 50.0}[config.ctk]
-            # Stage 2 (ubatch/batch grid): score so ub=512 b=1024 wins.
-            return 300.0 if (config.ubatch, config.batch) == (512, 1024) else 100.0
+            calls.append((config, kwargs["depths"]))
+            return {"f16": 100.0, "q8_0": 200.0, "q4_0": 50.0}[config.ctk]
 
         log: list[dict] = []
         with mock.patch.object(auto_tune_module, "probe_config", side_effect=fake_probe_config), \
@@ -153,12 +149,18 @@ class AutoTuneCharacterizationTests(unittest.TestCase):
 
         self.assertEqual(config.ctk, "q8_0")
         self.assertEqual(config.ctv, "q8_0")
-        self.assertEqual(config.ubatch, 512)
-        self.assertEqual(config.batch, 1024)
-        self.assertEqual(log[0]["stage"], "kv_cache_dtype")
-        self.assertEqual(log[0]["winner"], "q8_0")
-        self.assertEqual(log[1]["stage"], "ubatch_batch_grid")
-        self.assertEqual(log[1]["winner"], "ub512_b1024")
+        self.assertEqual((config.ubatch, config.batch), (2048, 2048))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual({candidate.ctk for candidate, _ in calls}, {"f16", "q8_0", "q4_0"})
+        self.assertTrue(all(
+            (candidate.ubatch, candidate.batch, depths) == (2048, 2048, (0, 4096))
+            for candidate, depths in calls
+        ))
+        self.assertEqual(log, [{
+            "stage": "kv_cache_dtype",
+            "scores": {"f16": 100.0, "q8_0": 200.0, "q4_0": 50.0},
+            "winner": "q8_0",
+        }])
 
 
 class MainCharacterizationTests(unittest.TestCase):

@@ -12,7 +12,7 @@ export interface CurveRow {
 }
 
 export interface TuningStage {
-  stage: "flash_attn" | "kv_cache_dtype" | "ubatch_batch_grid" | string;
+  stage: "flash_attn" | "kv_cache_dtype" | string;
   scores: Record<string, number>;
   winner: string | number;
 }

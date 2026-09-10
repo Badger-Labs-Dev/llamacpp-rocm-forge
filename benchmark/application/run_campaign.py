@@ -123,7 +123,7 @@ def run_model_campaign(
         tuning_ngl = 99
         if tuning_ncmoe:
             print(f"  MoE model: auto-tuning with --n-cpu-moe={tuning_ncmoe} "
-                  "so KV/ubatch/batch probes do not OOM before the MoE curve runs", flush=True)
+                  "so fixed-config KV probes do not OOM before the MoE curve runs", flush=True)
         elif dense_block_count:
             print(
                 "  Dense model: resolving a deepest-depth-safe --ngl before auto-tuning",

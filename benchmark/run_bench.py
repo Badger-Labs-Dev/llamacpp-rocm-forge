@@ -13,7 +13,7 @@ context_length can't be read.
 Model type (dense vs MoE) is auto-detected from GGUF *.expert_count -
 there is nothing to configure. Two modes, no in-between:
 
-  (default)  Staged auto-tune across ubatch, batch, and KV cache dtype
+  (default)  Auto-tune KV cache dtype at fixed ubatch=2048, batch=2048,
              (application/auto_tune.py). Dense models map the exact --ngl
              boundary per depth; detected MoE models also
              binary-searches the exact --n-cpu-moe boundary per depth
@@ -62,7 +62,6 @@ from adapters.outbound.terminal_progress import TerminalProgressReporter as Prog
 from application.auto_tune import (
     auto_tune,
     probe_depths,
-    valid_batch_grid_count,
 )
 from application.dense_sweep import (
     DENSE_QUICK_EXTRA_SAMPLE_COUNT,
@@ -120,7 +119,6 @@ def planned_probe_count(
     budget = campaign_budget(
         depth_count=len(depths),
         quick=args.quick,
-        valid_batch_pairs=valid_batch_grid_count(),
         kv_type_count=len(KV_CACHE_TYPES),
         tuning_depth_count=len(probe_depths(depths)),
         moe_block_count=(moe or {}).get("block_count"),

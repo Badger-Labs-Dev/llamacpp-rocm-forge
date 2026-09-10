@@ -15,26 +15,25 @@ VALID_FINAL_CONFIG = {
 
 
 class BenchmarkApplicationTests(unittest.TestCase):
-    def test_budget_preserves_worst_case_and_work_parts(self):
+    def test_budget_reserves_only_fixed_config_kv_tuning_and_work_parts(self):
         budget = campaign_budget(
             depth_count=3,
             quick=False,
-            valid_batch_pairs=13,
             kv_type_count=3,
             tuning_depth_count=2,
             moe_block_count=40,
         )
-        self.assertEqual(budget.total, 61)
-        self.assertEqual(budget.parts[0], ("tuning", 19))
+        self.assertEqual(budget.total, 48)
+        self.assertEqual(budget.parts[0], ("tuning", 6))
         self.assertEqual(budget.parts[-1], ("final curves", 6))
 
     def test_dense_budget_includes_preflight_only_in_default_mode(self):
         default = campaign_budget(
-            quick=False, depth_count=2, valid_batch_pairs=13, kv_type_count=3,
+            quick=False, depth_count=2, kv_type_count=3,
             tuning_depth_count=2, moe_block_count=None, dense_block_count=4,
         )
         quick = campaign_budget(
-            quick=True, depth_count=2, valid_batch_pairs=13, kv_type_count=3,
+            quick=True, depth_count=2, kv_type_count=3,
             tuning_depth_count=2, moe_block_count=None, dense_block_count=4,
         )
         self.assertIn("dense preflight", default.detail)

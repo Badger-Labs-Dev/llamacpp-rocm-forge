@@ -17,7 +17,6 @@ export interface SensitivityBar {
 const STAGE_LABELS: Record<string, string> = {
   flash_attn: "Flash attention",
   kv_cache_dtype: "KV cache dtype",
-  ubatch_batch_grid: "ubatch × batch",
 };
 
 const FLASH_ATTN_LABELS: Record<string, string> = { "0": "off", "1": "on" };
@@ -52,7 +51,7 @@ export function stageSensitivity(stage: TuningStage): SensitivityBar | null {
     : ((best[1] - worst[1]) / worst[1]) * 100;
   return {
     stage: stage.stage,
-    label: STAGE_LABELS[stage.stage] ?? stage.stage,
+    label: STAGE_LABELS[stage.stage] ?? stage.stage.replaceAll("_", " "),
     bestLabel: labelForCandidate(stage.stage, best[0]),
     worstLabel: labelForCandidate(stage.stage, worst[0]),
     bestValue: best[1],

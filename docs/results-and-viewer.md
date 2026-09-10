@@ -10,7 +10,7 @@ Every benchmark writes under `results/<model-slug>/<run-id>/`. The model slug co
 | `campaign_manifest.json` | Full configuration, tuning log, per-series status, stopped/skipped depths, and dense/MoE offload curves where applicable. |
 | `curve_summary.csv` | Prefill and generation throughput for the ordinary final depth curve. |
 | `*.jsonl` / `*.stderr.log` | Raw llama-bench output and diagnostics. |
-| `tuning/` | Full-sweep KV and ubatch/batch probes. |
+| `tuning/` | Fixed-config KV-cache dtype probes. |
 | `moe-tuning/` | MoE offload probes. |
 | `dense-preflight/` | Default-mode deepest-depth probes used to select a safe `--ngl` for auto-tuning. |
 | `dense-tuning/` | Per-depth dense `--ngl` boundary and throughput probes. |
@@ -47,7 +47,7 @@ npm run build
 ## What the viewer shows
 
 1. **Performance across versions** compares depth-0 throughput across completed ROCm/llama.cpp runs for one model.
-2. **Parameter sensitivity** turns a full sweep's staged `tuning_log` into a tornado chart. It reports the variation observed along the coordinate-descent path, not a fully independent parameter grid.
+2. **Parameter sensitivity** turns the fixed-config KV-cache dtype `tuning_log` into a tornado chart. It reports variation between the tested KV cache dtypes, not a broader parameter grid.
 3. **Recommended settings** shows the ordinary final configuration with the sensitivity notes that explain which choices moved performance enough to care about.
 4. **MoE expert offload** appears only when `moe_offload_curve` exists. It plots throughput by context depth for each sampled `-ncmoe` value and lists the smallest recorded value that fits at each depth.
 5. **Dense layer offload** appears only when `dense_offload_curve` exists. It plots prefill throughput against `--ngl` for each context depth and lists the exact maximum fitting value.
