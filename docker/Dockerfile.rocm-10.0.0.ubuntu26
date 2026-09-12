@@ -182,26 +182,28 @@ RUN mkdir -p /app/lib /app/full \
 # ==========================================================================
 # STAGE 3: runtime-base — shared minimal ROCm 10.0.0 runtime (no dev tools)
 #
-# amdrocm10.0-gfx1201 is AMD's "ROCm Base" meta-package: "Runtimes,
-# libraries, system control and monitoring tools" for this GPU target —
-# this is the correct minimal runtime dependency (there is no separate
-# "rocm-hip-runtime" package in the ROCm 10.0.0 apt repo). When
-# GFX_TARGET=all, the unsuffixed amdrocm10.0 is the same meta-package
-# scoped to every architecture instead of one — needed so the fat
-# multi-arch binary from STAGE 2 can find a matching runtime for whichever
-# GPU it ends up running on.
+# Named single-target images deliberately do not install AMD's broad
+# amdrocm10.0-gfx* meta-package. It pulls CK, ROCSHMEM, and DNN workloads
+# that llama.cpp does not need at runtime. amdrocm-runtime10.0 plus the
+# target-specific amdrocm-blas10.0-gfx* package provides the HIP runtime and
+# BLAS payload llama.cpp's dynamically loaded HIP backend requires.
+#
+# The builder stays on amdrocm-core-dev10.0-gfx*: it needs compilers,
+# headers, static libraries, and the full HIP build environment. GFX_TARGET=all
+# also retains the broad unsuffixed amdrocm10.0 package, because a slim
+# multi-architecture selection has not been validated separately.
 # ==========================================================================
 FROM rocm-repo AS runtime-base
 ARG GFX_TARGET
 ARG ROCM_META_VERSION
 
 RUN if [ "${GFX_TARGET}" = "all" ]; then \
-      RUNTIME_PKG="amdrocm${ROCM_META_VERSION}"; \
+      RUNTIME_PKGS="amdrocm${ROCM_META_VERSION}"; \
     else \
-      RUNTIME_PKG="amdrocm${ROCM_META_VERSION}-${GFX_TARGET}"; \
+      RUNTIME_PKGS="amdrocm-runtime${ROCM_META_VERSION} amdrocm-blas${ROCM_META_VERSION}-${GFX_TARGET}"; \
     fi \
     && apt-get update && apt-get install -y --no-install-recommends \
-    ${RUNTIME_PKG} \
+    ${RUNTIME_PKGS} \
     libgomp1 \
     libcurl4 \
     curl \
@@ -209,15 +211,18 @@ RUN if [ "${GFX_TARGET}" = "all" ]; then \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-# Register ROCm's shared libs (libamdhip64, libhipblas, libhipblaslt, ...)
-# with the dynamic linker permanently, instead of relying on
-# LD_LIBRARY_PATH. GGML_BACKEND_DL=ON makes llama.cpp dlopen() its HIP
-# backend at runtime, and dlopen() honors ld.so's cache/config the same way
-# normal linking does -- so this is sufficient, avoids the BuildKit
-# "UndefinedVar" lint warning from referencing an unset $LD_LIBRARY_PATH,
-# and keeps working even if a compose file or shell wipes/overrides the env.
-RUN echo /opt/rocm/lib > /etc/ld.so.conf.d/rocm.conf \
-    && echo /opt/rocm/lib64 >> /etc/ld.so.conf.d/rocm.conf \
+# The selected runtime packages put shared libraries under
+# /opt/rocm/core-10.0/lib rather than the conventional /opt/rocm/lib paths
+# supplied by the broad core package. Keep the conventional paths as
+# compatibility symlinks and register them in ld.so's cache: llama.cpp
+# dlopen()s the HIP backend, so LD_LIBRARY_PATH is neither needed nor used.
+# The broad GFX_TARGET=all path already owns these conventional directories.
+RUN if [ "${GFX_TARGET}" != "all" ]; then \
+      ln -s core-${ROCM_META_VERSION}/lib /opt/rocm/lib; \
+      ln -s core-${ROCM_META_VERSION}/lib /opt/rocm/lib64; \
+    fi \
+    && printf '%s\n' /opt/rocm/lib /opt/rocm/lib64 \
+       > /etc/ld.so.conf.d/rocm.conf \
     && ldconfig
 
 WORKDIR /app

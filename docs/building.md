@@ -83,9 +83,26 @@ llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1036-bench
 
 The tags must retain their gfx segment: otherwise one architecture-specific build would silently replace the other in the local image store.
 
+### ROCm runtime package selection and image size
+
+The `builder` stage continues to install AMD's broad target-specific `amdrocm-core-dev10.0-gfx*` meta-package. Building llama.cpp needs its HIP compiler, headers, static libraries, and CMake configuration, so narrowing that package is out of scope.
+
+Named final images use a narrower runtime set instead: `amdrocm-runtime10.0` plus `amdrocm-blas10.0-gfx*`. The former `amdrocm10.0-gfx*` meta-package also installs CK, ROCSHMEM, and DNN workloads that llama.cpp does not appear to require at runtime. The selected packages cover the HIP runtime and target-specific BLAS libraries required by llama.cpp's dynamically loaded HIP backend.
+
+These selected packages install shared objects beneath `/opt/rocm/core-10.0/lib`, while the broad core package exposes conventional `/opt/rocm/lib` and `/opt/rocm/lib64` paths. The runtime stage creates compatibility symlinks for those paths, writes them to `ld.so.conf.d`, and runs `ldconfig`. This deliberately uses the dynamic linker cache rather than `LD_LIBRARY_PATH`, so `dlopen()` of the HIP backend resolves consistently regardless of environment overrides.
+
+Package sizes vary by AMD release, but the validated ROCm 10.0 package experiment reduced the shared ROCm image layer approximately as follows:
+
+| Profile | Previous shared layer | Expected selected-package layer | Approx. reduction |
+|---|---:|---:|---:|
+| `gfx1036` | 6.49 GB | ~2.68 GB | ~3.81 GB |
+| `gfx1201` | 7.93 GB | ~3.02 GB | ~4.91 GB |
+
+These are expected image-layer reductions, not a model-execution guarantee. Run device enumeration and real GPU inference or benchmarking on the intended hardware before adopting a rebuilt image.
+
 ### Fat multi-arch image (`GFX_TARGET=all`)
 
-The Dockerfile still supports an explicit hand-built fat image. Its `GFX_TARGETS_ALL` list now includes `gfx1036`, and it installs AMD's unsuffixed all-architecture meta-packages. It keeps HIP UMA off by default, so it is appropriate for portable discrete-GPU images, not as the recommended iGPU image. Use the named `*-gfx1036` profiles for the Ryzen iGPU.
+The Dockerfile still supports an explicit hand-built fat image. Its `GFX_TARGETS_ALL` list now includes `gfx1036`, and it deliberately continues to install AMD's broad unsuffixed all-architecture `amdrocm10.0` meta-package: a minimal package selection for this multi-architecture path has not yet been validated. It keeps HIP UMA off by default, so it is appropriate for portable discrete-GPU images, not as the recommended iGPU image. Use the named `*-gfx1036` profiles for the Ryzen iGPU.
 
 ### Makefile alternative
 
