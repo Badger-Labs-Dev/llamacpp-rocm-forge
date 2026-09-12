@@ -1,6 +1,6 @@
 # Building the Docker image
 
-The benchmark uses a local Docker image rather than Toolbx or Podman. It is built for ROCm 10.0.0 on Ubuntu 26.04, and defaults to a single GPU target, the R9700 (`gfx1201`), but can build for any gfx target(s) AMD's ROCm 10.0.0 apt repo publishes; see "Building for multiple GPUs" below.
+The benchmark uses local Docker images rather than Toolbx or Podman. They are built for ROCm 10.0.0 on Ubuntu 26.04 for two local hardware profiles: the R9700 (`gfx1201`, HIP UMA **off**) and Ryzen 5 9600X iGPU (`gfx1036`, HIP UMA **on**).
 
 The Dockerfile (`docker/Dockerfile.rocm-10.0.0.ubuntu26`) doesn't pin a llama.cpp version itself: that's a build-time `LLAMA_CPP_REF` argument, so the same file builds a tagged release, `master`, or a specific commit.
 
@@ -11,7 +11,7 @@ This repo is scoped to building/tagging images and running the benchmark itself,
 `docker/Dockerfile.rocm-10.0.0.ubuntu26` is not a from-scratch build; it adapts two upstream sources, which are also credited in the file's own header comment:
 
 - **ROCm packages**: pulled directly from AMD's official apt repo, per [AMD's ROCm 10.0.0 install docs](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=radeon&w=compute&gpu=amd-radeon-ai-pro-r9700&gfx=gfx1201&os=ubuntu&ubuntu-ver=26.04&i=pkgman) for this exact GPU/OS/ROCm combination ("Package manager (apt)" install method). AMD hasn't published a ROCm 10.0.0 `rocm/dev-ubuntu-26.04:...-complete` container image yet, so instead of `FROM`-ing one (what upstream llama.cpp's own Dockerfile does), STAGE 1 starts from plain `ubuntu:26.04` and installs the ROCm apt repo/keyring/packages by hand, following those docs.
-- **llama.cpp build structure**: the build/runtime-split staging (a `builder` stage that compiles, then several slim final stages that each `COPY --from=builder` just one binary) mirrors [llama.cpp's own official ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (`.devops/rocm.Dockerfile` in that repo), using the same `GGML_HIP=ON`/`AMDGPU_TARGETS`/`GGML_BACKEND_DL=ON` cmake flags and the same `light`/`server`/(their `full`, our `bench`) split pattern. Adapted rather than copied wholesale: their base image is `rocm/dev-ubuntu-*-complete` (not available for ROCm 10.0.0/Ubuntu 26.04 yet, per above). Their `ROCM_DOCKER_ARCH` always builds a fat multi-GPU binary; this Dockerfile defaults to one target (`gfx1201`) at a time via `AMDGPU_TARGETS=${GFX_TARGET}`, but supports the same fat-build shape as an explicit opt-in, `GFX_TARGET=all` (see "Building for multiple GPUs" below).
+- **llama.cpp build structure**: the build/runtime-split staging (a `builder` stage that compiles, then several slim final stages that each `COPY --from=builder` just one binary) mirrors [llama.cpp's own official ROCm Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) (`.devops/rocm.Dockerfile` in that repo), using the same `GGML_HIP=ON`/`AMDGPU_TARGETS`/`GGML_BACKEND_DL=ON` cmake flags and the same `light`/`server`/(their `full`, our `bench`) split pattern. Adapted rather than copied wholesale: their base image is `rocm/dev-ubuntu-*-complete` (not available for ROCm 10.0.0/Ubuntu 26.04 yet, per above). Each named Bake profile builds one architecture-specific binary; `gfx1036` additionally sets llama.cpp's `LLAMA_HIP_UMA=ON` so the iGPU can allocate from system memory, while the R9700 profile keeps it off because it slows discrete GPUs.
 
 ## Build targets
 
@@ -23,7 +23,7 @@ The Dockerfile has three final targets, each producing a single-binary image:
 
 Tag convention: `<image>:rocm_<rocm-version>-llama_<llama-cpp-ref>-<gfx-target>-<target>`, e.g. `llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench`. Underscore binds a label to its value (`rocm_10.0.0`, `llama_v0.4.0`); hyphen separates distinct fields, keeping the version numbers, the gfx target, and the build target from running together.
 
-The gfx-target segment (`gfx1201`) is required, not cosmetic, same reason as the `-bench`/`-server`/`-light` suffix: building two different `GFX_TARGET`s with the same tag makes the second build silently overwrite the first in `docker images`. See "Building for multiple GPUs" below for building more than one target in one invocation.
+The gfx-target segment (`gfx1201`) is required, not cosmetic, same reason as the `-bench`/`-server`/`-light` suffix: building two different `GFX_TARGET`s with the same tag makes the second build silently overwrite the first in `docker images`. See "Building for the local GPUs" below for the named hardware profiles.
 
 `bench` and `light` have no fixed `ENTRYPOINT` (their binary is invoked with different args every run, so `/app` is just added to `PATH` instead: `docker run image llama-bench -m ...` works the way running it on a normal host would). `server` keeps a fixed entrypoint since it's a persistent daemon.
 
@@ -50,53 +50,54 @@ LLAMA_CPP_REF=master docker buildx bake bench
 
 `docker buildx bake --print [target]` shows the resolved tags/args without building anything, useful for checking what a tag will come out as before committing to a real build.
 
-## Building for multiple GPUs
+## Building for the local GPUs
 
-By default, both `bake` and `make` build a single-arch image for `gfx1201` (the R9700): one `AMDGPU_TARGETS` value baked into the compiled binary, one image per build target. This is deliberately *not* a fat multi-arch image the way [upstream llama.cpp's Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) builds one (`AMDGPU_TARGETS='gfx908;gfx90a;...'`, every arch in one binary); see [docs/building.md#where-this-build-comes-from](#where-this-build-comes-from) for why. Single-arch keeps each image smaller and each build faster; the tradeoff is one image per GPU instead of one image that runs anywhere.
+The recommended path is a named hardware profile in `docker-bake.hcl`, not a generic target matrix. Each profile makes its architecture and memory-allocation policy reviewable in one place:
 
-To build for more than one GPU, pass a list: `docker-bake.hcl`'s `GFX_TARGETS` (comma-separated) or the Makefile's `GFX_TARGETS` (space-separated), and each entry fans out into its own fully-tagged image, naming which gfx target it's for:
+| Profile | GPU | `GFX_TARGET` | `LLAMA_HIP_UMA` |
+|---|---|---|---|
+| `*-gfx1201` | Radeon AI PRO R9700 | `gfx1201` | `OFF` |
+| `*-gfx1036` | Ryzen 5 9600X integrated Radeon Graphics | `gfx1036` | `ON` |
 
-```bash
-# bake: comma-separated
-GFX_TARGETS=gfx1201,gfx1151 docker buildx bake bench
-# -> llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench
-# -> llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1151-bench
+`LLAMA_HIP_UMA=ON` enables HIP managed allocations, allowing the iGPU to use system memory beyond its BIOS-reserved frame buffer. It is deliberately **off** for the R9700: llama.cpp documents a performance penalty on discrete GPUs.
 
-# make: space-separated
-make bench GFX_TARGETS="gfx1201 gfx1151"
-```
-
-Each entry must be a gfx target AMD actually publishes ROCm 10.0.0 apt meta-packages for (`amdrocm10.0-<gfx>`, `amdrocm-core-dev10.0-<gfx>`); check [AMD's meta-packages table](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=26.04&i=pkgman#rocm-install-meta-packages) for the current list. There's no built-in "build for every supported arch" default: `GFX_TARGETS` is meant to stay an explicit, maintained set matching the GPUs actually in use, not silently balloon build time by building archs nobody runs.
-
-### Building a fat multi-arch image (`GFX_TARGET=all`)
-
-`GFX_TARGET=all` (not `GFX_TARGETS`, the multi-target *list* variable above; this is the Dockerfile's own single-value build-arg) switches the Dockerfile itself into building one fat image covering every architecture ROCm 10.0.0 supports, the way [upstream llama.cpp's Dockerfile](https://github.com/ggml-org/llama.cpp/blob/master/.devops/rocm.Dockerfile) always does. Via bake/make, set it through the plural `GFX_TARGETS` variable: `all` is just a one-element list there, so it fans out to a single `-all`-tagged image rather than one per arch (`bake`'s `--set target.args.GFX_TARGET=...` does **not** work here, since matrix expansion means the actual target name is `bench-gfx1201`, not `bench`):
+A plain Bake command builds both profiles with distinct tags:
 
 ```bash
-GFX_TARGETS=all docker buildx bake bench
-# -> llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-all-bench
+# both bench images
+docker buildx bake bench
 
-# make: same idea, one word instead of a list
-make bench GFX_TARGETS=all
+# all three final images for both GPUs
+docker buildx bake
 
-# or by hand:
-docker build \
-  --build-arg LLAMA_CPP_REF=v0.4.0 \
-  --build-arg GFX_TARGET=all \
-  --target bench \
-  -t llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-all-bench \
-  -f Dockerfile.rocm-10.0.0.ubuntu26 \
-  .
+# one iGPU image while iterating
+docker buildx bake bench-gfx1036
 ```
 
-What actually changes when `GFX_TARGET=all`:
+The resulting bench tags are:
 
-- **apt packages**: installs AMD's unsuffixed "all architectures" meta-packages (`amdrocm-core-dev10.0` in the builder stage, `amdrocm10.0` in the runtime stage) instead of the per-gfx ones.
-- **compile step**: `-DAMDGPU_TARGETS` gets the Dockerfile's hardcoded `GFX_TARGETS_ALL` build-arg (a semicolon-joined list of every gfx AMD's ROCm 10.0.0 meta-packages table lists) instead of the single `GFX_TARGET` value. There's no `AMDGPU_TARGETS=all`; cmake/LLVM has no such keyword, so an explicit enumerated list is unavoidable (same reason upstream llama.cpp hardcodes its own `ROCM_DOCKER_ARCH`).
+```text
+llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1201-bench
+llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gfx1036-bench
+```
 
-`GFX_TARGETS_ALL` is maintained by hand in the Dockerfile; it is **not** derived automatically from AMD's docs or from the compiler. Re-check [AMD's meta-packages table](https://rocm.docs.amd.com/en/latest/install/rocm.html?fam=all&w=compute&os=ubuntu&ubuntu-ver=26.04&i=pkgman#rocm-install-meta-packages) and update the Dockerfile's `GFX_TARGETS_ALL` arg when bumping `ROCM_META_VERSION` to a new ROCm release, or the fat build will silently miss newly-supported architectures.
+The tags must retain their gfx segment: otherwise one architecture-specific build would silently replace the other in the local image store.
 
-The tradeoff versus single-arch: a fat image is a materially bigger build (every listed arch's device code gets compiled) and a materially bigger final image, in exchange for one image that runs on any of those GPUs without rebuilding. Reach for `GFX_TARGET=all` only when that portability is actually needed, e.g. distributing a `server` image to run on whichever GPU a given homelab box happens to have, not for benchmarking one specific card.
+### Fat multi-arch image (`GFX_TARGET=all`)
+
+The Dockerfile still supports an explicit hand-built fat image. Its `GFX_TARGETS_ALL` list now includes `gfx1036`, and it installs AMD's unsuffixed all-architecture meta-packages. It keeps HIP UMA off by default, so it is appropriate for portable discrete-GPU images, not as the recommended iGPU image. Use the named `*-gfx1036` profiles for the Ryzen iGPU.
+
+### Makefile alternative
+
+`docker buildx bake` is the documented path. The retained Makefile mirrors the two local profiles by default:
+
+```bash
+make bench
+# override to build only the R9700 image
+make bench GFX_TARGETS="gfx1201"
+```
+
+`HIP_UMA_TARGETS` defaults to `gfx1036`; it adds `--build-arg ENABLE_HIP_UMA=ON` only for matching targets.
 
 ### Why bake over hand-typed `docker build -t ...`?
 
@@ -166,7 +167,7 @@ docker run --rm --entrypoint cat llamacpp-rocm-forge:rocm_10.0.0-llama_v0.4.0-gf
 
 The last command shows what `run_id()` will call this build in results directory names: a release tag (`v0.4.0`) if `LLAMA_CPP_REF` was a tag, otherwise a short commit SHA.
 
-GPU access is supplied by `run_bench.py` when it starts each benchmark container. The script passes `/dev/dri`, `/dev/kfd`, and the host's numeric `video` and `render` GIDs. It targets `ROCm0`, the discrete R9700; this host also exposes the Ryzen iGPU as `ROCm1`.
+GPU access is supplied by `run_bench.py` when it starts each benchmark container. The script passes `/dev/dri`, `/dev/kfd`, and the host's numeric `video` and `render` GIDs. It defaults to `ROCm0`, the discrete R9700; the iGPU is currently `ROCm1`, but enumerate devices inside the container before selecting it because the ordering is not a stable contract.
 
 ## Running the server
 

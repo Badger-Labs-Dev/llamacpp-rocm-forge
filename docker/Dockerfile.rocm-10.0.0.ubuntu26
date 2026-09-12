@@ -22,7 +22,7 @@
 #
 # GFX_TARGET normally names one gfx arch (e.g. gfx1201) and produces a
 # single-arch image built only for that GPU -- see docker/docker-bake.hcl's
-# GFX_TARGETS for building several of those, one image each. Passing
+# named hardware profiles for the locally supported images. Passing
 # GFX_TARGET=all instead switches to a single FAT multi-arch image: apt
 # installs AMD's unsuffixed "all architectures" meta-packages
 # (amdrocm-core-dev${ROCM_META_VERSION}, amdrocm${ROCM_META_VERSION}), and
@@ -37,6 +37,10 @@
 # ==========================================================================
 
 ARG GFX_TARGET=gfx1201
+# HIP UMA is required for integrated GPUs that need system RAM beyond their
+# BIOS-reserved frame buffer. Keep it OFF for discrete GPUs: upstream llama.cpp
+# documents that unified allocations hurt their performance.
+ARG ENABLE_HIP_UMA=OFF
 ARG ROCM_META_VERSION=10.0
 
 # Full arch list for GFX_TARGET=all, semicolon-joined for
@@ -44,7 +48,7 @@ ARG ROCM_META_VERSION=10.0
 # meta-packages table (see header comment above) -- not derived
 # automatically, so it can silently go stale on a new ROCm release if not
 # re-checked.
-ARG GFX_TARGETS_ALL="gfx908;gfx90a;gfx942;gfx950;gfx1030;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
+ARG GFX_TARGETS_ALL="gfx908;gfx90a;gfx942;gfx950;gfx1030;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
 
 # What to build: a release tag (e.g. v0.4.0), a branch (e.g. master), or a
 # full 40-char commit SHA. All three fetch identically (see STAGE 2) --
@@ -95,6 +99,7 @@ EOF
 # ==========================================================================
 FROM rocm-repo AS builder
 ARG GFX_TARGET
+ARG ENABLE_HIP_UMA
 ARG ROCM_META_VERSION
 ARG GFX_TARGETS_ALL
 ARG LLAMA_CPP_REF
@@ -148,6 +153,8 @@ RUN FULL_SHA="$(git rev-parse HEAD)" \
 # AMDGPU_TARGETS takes GFX_TARGETS_ALL's full semicolon-joined list when
 # GFX_TARGET=all (fat multi-arch build, same shape as upstream llama.cpp's
 # own ROCM_DOCKER_ARCH default), otherwise the single GFX_TARGET value.
+# LLAMA_HIP_UMA uses managed allocations for an integrated GPU. It stays OFF
+# for discrete targets, where upstream llama.cpp documents a performance cost.
 RUN if [ "${GFX_TARGET}" = "all" ]; then \
       TARGETS="${GFX_TARGETS_ALL}"; \
     else \
@@ -157,6 +164,7 @@ RUN if [ "${GFX_TARGET}" = "all" ]; then \
     cmake -S . -B build \
     -DGGML_HIP=ON \
     -DAMDGPU_TARGETS="${TARGETS}" \
+    -DLLAMA_HIP_UMA="${ENABLE_HIP_UMA}" \
     -DGGML_BACKEND_DL=ON \
     -DGGML_CPU_ALL_VARIANTS=ON \
     -DCMAKE_BUILD_TYPE=Release \
