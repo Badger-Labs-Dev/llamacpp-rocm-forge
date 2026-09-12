@@ -1,0 +1,161 @@
+# vLLM server for AMD ROCm — prebuilt wheel + apt-based ROCm install
+#
+# Usage:
+#   docker buildx bake vllm-server
+#   VLLM_VERSION=0.9.0 docker buildx bake vllm-server
+#
+# The vLLM prebuilt ROCm wheel bundles PyTorch ROCm, Triton, and vLLM.
+# No gfx target split is needed — the wheel handles ROCm device dispatch
+# internally. The runtime installs ROCm libraries for the target GPU
+# (default: gfx1201 / R9700).
+#
+# Run the server:
+#   docker run --gpus all -v /models:/models \
+#     llamacpp-rocm-forge:rocm_10.0.0-vllm-latest-gfx1201 \
+#     Meta-Llama-3.1-8B-Instruct --max-model-len 4096
+
+ARG ROCM_META_VERSION=10.0
+ARG VLLM_VERSION=
+ARG GFX_TARGET=gfx1201
+
+# ==========================================================================
+# STAGE 1: rocm-repo — AMD's ROCm 10.0.0 apt repo configured
+# Same setup as Dockerfile.rocm-10.0.0.ubuntu26; kept self-contained
+# (no cross-Dockerfile sharing per design).
+# ==========================================================================
+FROM ubuntu:26.04 AS rocm-repo
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget gnupg2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/apt/keyrings \
+    && wget https://stable.repo.amd.com/rocm/gpg/packages.gpg -O - | \
+    gpg --dearmor | tee /etc/apt/keyrings/amdrocm.gpg > /dev/null \
+    && tee /etc/apt/sources.list.d/amdrocm-stable.sources <<EOF
+X-Repo-Id: amdrocm-stable
+Types: deb
+URIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/amdrocm.gpg
+Enabled: yes
+EOF
+
+# ==========================================================================
+# STAGE 2: builder — ROCm dev + Python 3.12 + PyTorch ROCm + vLLM wheel
+#
+# All Python packages are installed to /install so they can be copied
+# into the runtime stage without re-downloading.
+# ==========================================================================
+FROM rocm-repo AS builder
+
+ARG ROCM_META_VERSION
+ARG VLLM_VERSION
+
+# ROCm dev packages (compilers, headers, CMake package configs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    amdrocm-core-dev${ROCM_META_VERSION} \
+    git cmake build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 3.12
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
+    python3.12 python3.12-dev python3.12-venv \
+    python-is-python3 \
+    && ln -sf /usr/bin/python3.12-config /usr/bin/python3-config \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 \
+    && python3 --version \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir packaging 'cmake<4' ninja wheel 'setuptools<80'
+
+# Install Python packages to /install for copying to runtime stage.
+# Torch/triton versions are left unpinned so the AMD wheel repo provides
+# whatever is latest for ROCm 10.0.0 (as requested). vLLM is pinned if
+# VLLM_VERSION is set, otherwise pulls the latest stable.
+RUN mkdir -p /install \
+    && VLLM_PKG="vllm" \
+    && [ -n "${VLLM_VERSION}" ] && VLLM_PKG="vllm==${VLLM_VERSION}" \
+    && pip install --no-cache-dir --target=/install \
+    --index-url https://stable.repo.amd.com/rocm/whl-next/ \
+    --extra-index-url https://nightly.repo.amd.com/rocm/whl-next/ \
+    torch torchvision torchaudio triton \
+    ${VLLM_PKG}
+
+# Record versions for image identity
+RUN python3 -c "import sys; sys.path.insert(0, '/install'); import torch; print(torch.__version__)" \
+    > /install/.torch-version \
+    && python3 -c "import sys; sys.path.insert(0, '/install'); import triton; print(triton.__version__)" \
+    > /install/.triton-version \
+    && python3 -c "import sys; sys.path.insert(0, '/install'); import vllm; print(vllm.__version__)" \
+    > /install/.vllm-version
+
+# ==========================================================================
+# STAGE 3: runtime — minimal ROCm runtime + vLLM server
+# ==========================================================================
+FROM rocm-repo AS runtime
+
+ARG ROCM_META_VERSION
+ARG GFX_TARGET=gfx1201
+
+# Minimal ROCm runtime packages (no compilers, no headers).
+# amdrocm-runtime gives the HIP runtime; amdrocm-blas gives BLAS
+# payload needed by PyTorch's ROCm backend.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    amdrocm-runtime${ROCM_META_VERSION} \
+    amdrocm-blas${ROCM_META_VERSION}-${GFX_TARGET} \
+    libgomp1 \
+    libcurl4 \
+    curl \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Link ROCm library paths (same pattern as llama.cpp Dockerfile).
+# The slim runtime packages put libs under /opt/rocm/core-10.0/lib;
+# symlinks under /opt/rocm/lib keep the conventional paths working.
+RUN ln -s core-${ROCM_META_VERSION}/lib /opt/rocm/lib \
+    && ln -s core-${ROCM_META_VERSION}/lib /opt/rocm/lib64 \
+    && printf '%s\n' /opt/rocm/lib /opt/rocm/lib64 \
+       > /etc/ld.so.conf.d/rocm.conf \
+    && ldconfig
+
+# Python 3.12 (minimal — no dev packages needed at runtime)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
+    python3.12 python3.12-venv \
+    python-is-python3 \
+    && ln -sf /usr/bin/python3.12-config /usr/bin/python3-config \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 \
+    && python3 --version \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python packages from builder (torch, triton, vllm, deps)
+COPY --from=builder /install /usr/local/lib/python3.12/site-packages/
+
+# Copy version files for image identity
+COPY --from=builder /install/.torch-version /app/.torch-version
+COPY --from=builder /install/.triton-version /app/.triton-version
+COPY --from=builder /install/.vllm-version /app/.vllm-version
+
+# vLLM server defaults — all can be overridden per-deployment
+ENV VLLM_HOST=0.0.0.0
+ENV VLLM_PORT=8000
+
+# Required for RCCL in ROCm 7.1+ (prevents HSA teardown hang)
+ENV HSA_NO_SCRATCH_RECLAIM=1
+
+# Disable rocprofiler queue interposition (torch 2.12 hangs at HSA
+# teardown with it enabled; drop once ROCm stock rocprofiler carries the fix)
+ENV ROCPROFILER_QUEUE_INTERPOSITION=0
+
+EXPOSE 8000
+ENTRYPOINT ["vllm"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
