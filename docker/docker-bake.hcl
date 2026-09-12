@@ -1,14 +1,12 @@
 // docker-bake.hcl — declarative multi-target builds for
 // Dockerfile.rocm-10.0.0.ubuntu26, so tags aren't hand-typed on every
-// `docker build` invocation and all three targets can be built together.
+// `docker build` invocation and both targets can be built together.
 //
 // Usage:
-//   docker buildx bake                         # build bench+server+light for the R9700 and iGPU
-//   docker buildx bake bench                    # build only both bench images
-//   docker buildx bake bench-gfx1036            # build only the UMA-enabled iGPU bench image
+//   docker buildx bake                         # build server+light for the R9700 and iGPU
 //   docker buildx bake server light              # build those targets for both GPUs
-//   LLAMA_CPP_REF=master docker buildx bake bench # override the llama.cpp ref for this build
-//   docker buildx bake --print bench             # show the resolved config (tags, args, etc.) without building
+//   LLAMA_CPP_REF=master docker buildx bake server # override the llama.cpp ref for this build
+//   docker buildx bake --print server            # show the resolved config (tags, args, etc.) without building
 //
 // ROCM_VERSION here is the tag-facing version string (matches what
 // rocm_environment.py reads back at runtime, e.g. "10.0.0"). It is
@@ -66,18 +64,6 @@ target "_igpu" {
   }
 }
 
-target "bench-gfx1201" {
-  inherits = ["_common", "_r9700"]
-  target   = "bench"
-  tags     = image_tag("bench", "gfx1201")
-}
-
-target "bench-gfx1036" {
-  inherits = ["_common", "_igpu"]
-  target   = "bench"
-  tags     = image_tag("bench", "gfx1036")
-}
-
 target "server-gfx1201" {
   inherits = ["_common", "_r9700"]
   target   = "server"
@@ -102,10 +88,6 @@ target "light-gfx1036" {
   tags     = image_tag("light", "gfx1036")
 }
 
-group "bench" {
-  targets = ["bench-gfx1201", "bench-gfx1036"]
-}
-
 group "server" {
   targets = ["server-gfx1201", "server-gfx1036"]
 }
@@ -115,5 +97,5 @@ group "light" {
 }
 
 group "default" {
-  targets = ["bench", "server", "light"]
+  targets = ["server", "light"]
 }

@@ -173,11 +173,10 @@ RUN if [ "${GFX_TARGET}" = "all" ]; then \
 
 # Collect only what the runtime stages need: the shared libs (backends are
 # built as dynamic .so's because of GGML_BACKEND_DL=ON) plus the binaries.
-# llama-bench is built by default alongside llama-cli/llama-server -- no
-# extra cmake flags needed, just copy it out too.
+# Copy only the binaries we need for runtime stages.
 RUN mkdir -p /app/lib /app/full \
     && find build -name "*.so*" -exec cp -P {} /app/lib \; \
-    && cp build/bin/llama-cli build/bin/llama-server build/bin/llama-bench /app/full/
+    && cp build/bin/llama-cli build/bin/llama-server /app/full/
 
 # ==========================================================================
 # STAGE 3: runtime-base — shared minimal ROCm 10.0.0 runtime (no dev tools)
@@ -230,9 +229,8 @@ COPY --from=builder /app/lib/ /app
 RUN mkdir /models
 
 # Every final stage below carries the same two small identity files,
-# queried via `docker run --rm image cat /app/.llama-cpp-identity` by
-# benchmark/adapters/outbound/rocm_environment.py instead of parsing
-# `--version` stdout (whose format has already changed once upstream).
+# queried via `docker run --rm image cat /app/.llama-cpp-identity` to
+# identify the build.
 # (Not Docker LABELs: LABEL values can't run shell command substitution
 # like $(cat ...), so a plain file is the simplest way to carry a value
 # computed during the build into the final image.)
@@ -250,19 +248,6 @@ COPY --from=builder /build-env/llama-cpp-commit /app/.llama-cpp-commit
 # ==========================================================================
 FROM runtime-base AS light
 COPY --from=builder /app/full/llama-cli /app/llama-cli
-ENV PATH="/app:${PATH}"
-
-# ==========================================================================
-# STAGE 4c: bench — llama-bench only (throughput/latency benchmarking)
-#
-# No ENTRYPOINT for the same reason as light: benchmark/adapters/outbound/
-# docker_llama_bench.py invokes this image as
-# `docker run ... image llama-bench -m ... -o jsonl ...`, i.e. it expects
-# `llama-bench` to be a runnable command inside the container, not to BE
-# the container's fixed entrypoint.
-# ==========================================================================
-FROM runtime-base AS bench
-COPY --from=builder /app/full/llama-bench /app/llama-bench
 ENV PATH="/app:${PATH}"
 
 # ==========================================================================

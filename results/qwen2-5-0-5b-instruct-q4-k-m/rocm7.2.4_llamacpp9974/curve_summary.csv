@@ -1,7 +1,0 @@
-model,series,ubatch,batch,ctk,ctv,flash_attn,n_depth,n_prompt,n_gen,avg_ts,avg_ns,status
-qwen2.5-0.5b-instruct-q4_k_m.gguf,prefill,2048,2048,f16,f16,1,0,2048,0,24812.107461,82588970,ok
-qwen2.5-0.5b-instruct-q4_k_m.gguf,prefill,2048,2048,f16,f16,1,2048,2048,0,24651.648947,83287518,ok
-qwen2.5-0.5b-instruct-q4_k_m.gguf,prefill,2048,2048,f16,f16,1,6144,2048,0,19160.208149,107261799,ok
-qwen2.5-0.5b-instruct-q4_k_m.gguf,generation,2048,2048,f16,f16,1,0,0,128,332.738683,391784553,ok
-qwen2.5-0.5b-instruct-q4_k_m.gguf,generation,2048,2048,f16,f16,1,2048,0,128,317.064487,410144759,ok
-qwen2.5-0.5b-instruct-q4_k_m.gguf,generation,2048,2048,f16,f16,1,6144,0,128,308.366057,416232187,ok

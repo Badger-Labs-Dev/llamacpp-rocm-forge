@@ -7,11 +7,10 @@
 # for comparison; docker-bake.hcl is what's actually documented/used.
 #
 # Usage:
-#   make bench                                    # build R9700 + UMA-enabled iGPU bench images
-#   make all                                       # build bench+server+light for both profiles
+#   make all                                       # build server+light for both profiles
 #   make server LLAMA_CPP_REF=master               # override the llama.cpp ref
-#   make bench GFX_TARGETS="gfx1201"               # build only the R9700 image
-#   make bench HIP_UMA_TARGETS="gfx1036"           # override which target(s) use HIP UMA
+#   make server GFX_TARGETS="gfx1201"              # build only the R9700 image
+#   make server HIP_UMA_TARGETS="gfx1036"          # override which target(s) use HIP UMA
 
 ROCM_VERSION     ?= 10.0.0
 LLAMA_CPP_REF    ?= v0.4.0
@@ -22,11 +21,11 @@ IMAGE         := llamacpp-rocm-forge
 
 TAG_REF := $(subst /,_,$(LLAMA_CPP_REF))
 
-.PHONY: all bench server light
+.PHONY: all server light
 
-all: bench server light
+all: server light
 
-bench server light:
+server light:
 	$(foreach gfx,$(GFX_TARGETS), \
 	  docker build \
 	    --build-arg LLAMA_CPP_REF=$(LLAMA_CPP_REF) \
